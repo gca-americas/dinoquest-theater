@@ -1,0 +1,15 @@
+.git/
+.gitignore
+.dockerignore
+.gcloudignore
+
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.pytest_cache/
+
+.env
+.env.local
+
+README.md
