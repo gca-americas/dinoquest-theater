@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>dino-theater</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100vw; height: 20vh; min-height: 180px; overflow: hidden; background: #f8fafc; }
+canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>
+const canvas = document.getElementById('stage');
+const ctx    = canvas.getContext('2d');
+const W = () => canvas.offsetWidth;
+const H = () => canvas.offsetHeight;
+
+function resize() {
+  canvas.width  = canvas.offsetWidth  * devicePixelRatio;
+  canvas.height = canvas.offsetHeight * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  computeLayout();
+}
+
+// ── Stations ──────────────────────────────────────────────────────────────────
+
+const STATION_DEFS = [
+  { id:'source',  label:'Source Code',   emoji:'🛠️', color:'#4A4E69' }, // Darker Mauve/Slate
+  { id:'github',  label:'GitHub',        emoji:'📦', color:'#22223B' }, // Deep Blue-Grey
+  { id:'cbuild',  label:'Cloud Build',   emoji:'⚙️', color:'#6D597A' }, // Muted Burgundy
+  { id:'testing', label:'Testing',       emoji:'🔍', color:'#354F52' }, // Dark Sage
+  { id:'crun',    label:'Cloud Run',     emoji:'🛰️', color:'#4E3B4F' }, // Deep Muted Purple
+  { id:'cloud',   label:'Cloud General', emoji:'🌐', color:'#2F3E46' }, // Dark Forest Mist
+];
+
+let stations    = {};
+let groundY     = 0;
+let agentsReady = false;
+
+function computeLayout() {
+  groundY = H() * 0.68;
+  const pad  = Math.max(60, W() * 0.05);
+  const span = W() - pad * 2;
+  STATION_DEFS.forEach((s, i) => {
+    stations[s.id] = { ...s, x: pad + (span / (STATION_DEFS.length - 1)) * i };
+  });
+  if (!agentsReady) { agentsReady = true; initAgents(); }
+}
+
+// ── Log particles ─────────────────────────────────────────────────────────────
+
+const LOG_POOL = [
+  '[ERROR] OOM: 512 MB exceeded', '[WARN]  heap growth detected',
+  '[INFO]  fetching cloud logs…', '[ERROR] pod restarted: OOM kill',
+  '[LOG]   memory: 498/512 MB',   '[WARN]  leaderboard slow query',
+  '[INFO]  pulling metrics…',     '[ERROR] request timeout 30s',
+  '[WARN]  GC pressure high',     '[INFO]  trace: alloc 128 MB',
+];
+let logParticles = [];
+let logSpawnT    = 0;
+
+function spawnLog() {
+  const cx   = stations.cloud?.x ?? W() * 0.92;
+  const text = LOG_POOL[Math.floor(Math.random() * LOG_POOL.length)];
+  const fromRight = Math.random() > 0.35;
+  logParticles.push({
+    x:  fromRight ? W() + 8 : cx + 50 + Math.random() * W() * 0.13,
+    y:  fromRight ? groundY * (0.12 + Math.random() * 0.78) : -8,
+    tx: cx,
+    ty: groundY * 0.28,
+    text,
+    life: 100, maxLife: 100,
+    color: text.startsWith('[ERROR') ? '#B5838D'
+         : text.startsWith('[WARN')  ? '#E9C46A' : '#9A8C98',
+  });
+}
+
+function tickLogs() {
+  if ((litStations.cloud ?? 0) > 0) {
+    logSpawnT++;
+    if (logSpawnT % 20 === 0) spawnLog();
+  }
+  logParticles = logParticles.filter(p => p.life > 0);
+  for (const p of logParticles) {
+    p.x += (p.tx - p.x) * 0.06;
+    p.y += (p.ty - p.y) * 0.06;
+    p.alpha = Math.min(1, p.life / 22);
+    p.life--;
+  }
+}
+
+function drawLogs() {
+  const sz = Math.max(8, H() * 0.072);
+  ctx.font = `600 ${sz}px 'Courier New', monospace`;
+  ctx.textBaseline = 'middle';
+  for (const p of logParticles) {
+    ctx.globalAlpha = p.alpha * 0.95;
+    ctx.fillStyle   = p.color;
+    ctx.textAlign   = 'right';
+    ctx.fillText(p.text, p.x, p.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ── Agent config ──────────────────────────────────────────────────────────────
+
+const CFG = {
+  DinoAgent: { name:'Dino', color:'#354F52', shirt:'#52796F', shirtD:'#2F3E46', pants:'#1B262B', eyeColor:'#84A98C' },
+  CIAgent:   { name:'CI',   color:'#22223B', shirt:'#4A4E69', shirtD:'#1B1B2F', pants:'#0F0F1A', eyeColor:'#9A8C98' },
+  CDAgent:   { name:'CD',   color:'#4E3B4F', shirt:'#6D597A', shirtD:'#3D2C3D', pants:'#1A1A1A', eyeColor:'#B5838D' },
+};
+
+// ── Message log ───────────────────────────────────────────────────────────────
+
+const msgLog = [];  // { agent, text, color, ts }
+
+function addLog(agent, text) {
+  const color = CFG[agent]?.color ?? '#9A8C98';
+  const clean = text.replace(/^[\u{1F000}-\u{1FFFF}💭💬⚡🔓→✓✦⏳🚦]\s*/u, '').trim();
+  msgLog.unshift({ agent, text: clean, color, ts: Date.now() });
+  if (msgLog.length > 6) msgLog.length = 6;
+}
+
+function drawMsgLog() {
+  if (!msgLog.length) return;
+  const logH  = Math.max(28, H() * 0.22);
+  const pad   = 10;
+  const y0    = H() - logH - pad;
+  const x0    = pad;
+  const w0    = W() - pad * 2;
+  const sz    = Math.max(10, H() * 0.082);
+  const lineH = sz * 1.4;
+  const vis   = Math.min(msgLog.length, Math.floor((logH - 10) / lineH));
+  if (!vis) return;
+
+  // Liquid Glass panel
+  const glassG = ctx.createLinearGradient(x0, y0, x0 + w0, y0 + logH);
+  glassG.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+  glassG.addColorStop(1, 'rgba(241, 245, 249, 0.7)');
+  ctx.fillStyle = glassG;
+  
+  ctx.shadowColor = 'rgba(15, 23, 42, 0.1)';
+  ctx.shadowBlur = 15;
+  rrect(x0, y0, w0, logH, 16);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Reflection highlight
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x0 + 20, y0);
+  ctx.lineTo(x0 + w0 - 20, y0);
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.05)';
+  ctx.lineWidth = 1;
+  rrect(x0, y0, w0, logH, 16);
+  ctx.stroke();
+
+  ctx.font = `600 ${sz}px Inter,system-ui,sans-serif`;
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < vis; i++) {
+    const m   = msgLog[i];
+    const age = (Date.now() - m.ts) / 1000;
+    ctx.globalAlpha = Math.max(0.4, 1 - age / 45);
+    const ty = y0 + 10 + (i + 0.5) * ((logH - 15) / vis);
+    const tag = `[${m.agent.replace('Agent','')}] `;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = m.color;
+    ctx.fillText(tag, x0 + 14, ty);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText(m.text, x0 + 14 + ctx.measureText(tag).width, ty);
+  }
+  ctx.globalAlpha = 1;
+}
+
+const A = {};
+
+function initAgents() {
+  A.DinoAgent = mk(lerp(stations.source?.x ?? 0,  stations.github?.x  ?? 100, 0.45));
+  A.CIAgent   = mk(lerp(stations.cbuild?.x ?? 200, stations.testing?.x ?? 300, 0.5));
+  A.CDAgent   = mk(lerp(stations.crun?.x  ?? 400,  stations.cloud?.x  ?? 500, 0.45));
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function mk(x) {
+  return { x, targetX:x, walkF:0, working:false, speech:'', speechT:0, returnX:x,
+           lastSeen: Date.now(), alpha: 1 };
+}
+
+// ── Station glow state ────────────────────────────────────────────────────────
+
+const litStations = {};
+function lightStation(id, frames = 440) { litStations[id] = frames; }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+
+// ── Background ────────────────────────────────────────────────────────────────
+
+function drawBg() {
+  // Morandi Background (Warm Gray/Beige)
+  const g = ctx.createLinearGradient(0, 0, 0, H());
+  g.addColorStop(0, '#F5EBE0');
+  g.addColorStop(1, '#E3D5CA');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W(), H());
+
+  // Soft Morandi orbs
+  drawOrb(W() * 0.2, H() * 0.3, H() * 0.5, 'rgba(154, 140, 152, 0.1)');
+  drawOrb(W() * 0.8, H() * 0.6, H() * 0.4, 'rgba(201, 173, 167, 0.1)');
+  drawOrb(W() * 0.5, H() * 0.2, H() * 0.6, 'rgba(132, 169, 140, 0.1)');
+
+  // Ground line
+  ctx.strokeStyle = 'rgba(74, 78, 105, 0.1)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(W(), groundY); ctx.stroke();
+}
+
+function drawOrb(x, y, r, color) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, color);
+  g.addColorStop(1, 'transparent');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+}
+
+// ── Station drawing ───────────────────────────────────────────────────────────
+
+function drawStation(s) {
+  if (!s) return;
+  const lit   = (litStations[s.id] ?? 0) > 0;
+  const sx    = s.x;
+
+  const bldW = Math.max(50, W() * 0.06);
+  const bldH = groundY * 0.65;
+  const bldX = sx - bldW / 2;
+  const bldY = groundY - bldH - 10; // Floating
+
+  // Shadow/Glow
+  if (lit) {
+    ctx.shadowColor = s.color + '88'; // Add translucency
+    ctx.shadowBlur = 10;
+  } else {
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.08)';
+    ctx.shadowBlur = 6;
+  }
+
+  // Liquid Glass Body
+  const glassG = ctx.createLinearGradient(bldX, bldY, bldX + bldW, bldY + bldH);
+  if (lit) {
+    glassG.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+    glassG.addColorStop(1, 'rgba(255, 255, 255, 0.75)');
+  } else {
+    glassG.addColorStop(0, 'rgba(255, 255, 255, 0.65)');
+    glassG.addColorStop(1, 'rgba(255, 255, 255, 0.35)');
+  }
+  ctx.fillStyle = glassG;
+  ctx.strokeStyle = lit ? s.color : 'rgba(15, 23, 42, 0.1)';
+  ctx.lineWidth = lit ? 2.5 : 1.5;
+  rrect(bldX, bldY, bldW, bldH, 12);
+  ctx.fill(); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Glossy Reflection
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(bldX + 8, bldY + 2);
+  ctx.lineTo(bldX + bldW - 8, bldY + 2);
+  ctx.stroke();
+
+  // Polished Edge
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.03)';
+  ctx.lineWidth = 0.5;
+  rrect(bldX + 1, bldY + 1, bldW - 2, bldH - 2, 11);
+  ctx.stroke();
+
+  // Top accent bar (Polished)
+  ctx.fillStyle = lit ? s.color : 'rgba(15, 23, 42, 0.08)';
+  rrect(bldX, bldY, bldW, bldH * 0.12, 12);
+  ctx.fill();
+  ctx.fillRect(bldX, bldY + 6, bldW, bldH * 0.04); 
+
+  // Emoji icon
+  const iconSz = Math.max(20, bldH * 0.38);
+  ctx.font = `${iconSz}px serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(s.emoji, sx, bldY + bldH * 0.50);
+
+  // Label
+  const lblSz = Math.max(8.5, bldH * 0.14);
+  ctx.font = `600 ${lblSz}px Inter,system-ui,sans-serif`;
+  ctx.fillStyle    = lit ? s.color : '#64748b';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(s.label, sx, bldY + bldH - 6);
+}
+
+// ── Robot character drawing ───────────────────────────────────────────────────
+
+// ── Robot character drawing ───────────────────────────────────────────────────
+
+function drawRobot(name) {
+  const ag  = A[name];
+  const cfg = CFG[name];
+  if (!ag || !cfg) return;
+
+  const alpha = ag.alpha ?? 1;
+  if (alpha <= 0) return;
+
+  const x    = ag.x;
+  const h    = Math.min(66, H() * 0.42);
+  const y    = groundY;
+
+  // Proportions
+  const bH    = h * 0.35;
+  const bW    = h * 0.40;
+  const hdW   = h * 0.36;
+  const hdH   = h * 0.28;
+  const bob   = Math.sin(ag.walkF * 0.1) * 3; // Hover bobbing
+  const bY    = y - h * 0.15 - bH + bob;
+  const hdY   = bY - hdH - h * 0.02;
+
+  const moving  = Math.abs(ag.targetX - ag.x) > 2;
+  const phs     = ag.walkF;
+  const armSw   = moving  ? -Math.sin(phs * 0.22) * 0.48
+                : ag.working ? Math.sin(phs * 0.16) * 0.36 : 0;
+
+  const active  = (ag.speech && ag.speechT > 0) || ag.working;
+  const dir     = (ag.targetX >= ag.x) ? 1 : -1;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Ground shadow (pulsing with bob)
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.06)';
+  const shadR = h * 0.22 - bob * 0.2;
+  ctx.beginPath(); ctx.ellipse(x, y + 1, shadR, h * 0.06, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Hover Glow (underneath)
+  const hoverCol = cfg.color;
+  ctx.shadowColor = hoverCol + 'aa'; // Translucent glow
+  ctx.shadowBlur = 8 + bob * 0.5;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+  rrect(x - bW * 0.3, bY + bH - 2, bW * 0.6, 3, 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Body (Angular Robot Chassis)
+  ctx.fillStyle = cfg.shirt;
+  ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 1.5;
+  rrect(x - bW / 2, bY, bW, bH, 4);
+  ctx.fill(); ctx.stroke();
+
+  // Back Plates (Mechanical spikes)
+  ctx.fillStyle = cfg.shirtD;
+  for (let i = 0; i < 3; i++) {
+    const px = x - bW * 0.25 + i * bW * 0.25;
+    const py = bY;
+    ctx.beginPath();
+    ctx.moveTo(px - 5, py);
+    ctx.lineTo(px, py - 8);
+    ctx.lineTo(px + 5, py);
+    ctx.fill();
+  }
+
+  // Chest Reactor
+  const chestCol = active ? '#fbbf24' : cfg.shirtD;
+  if (active) { ctx.shadowColor = 'rgba(251, 191, 36, 0.6)'; ctx.shadowBlur = 10; }
+  ctx.fillStyle = chestCol;
+  ctx.beginPath(); ctx.arc(x + dir * 6, bY + bH * 0.45, h * 0.05, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Arms (Jointed)
+  ctx.strokeStyle = cfg.shirt; ctx.lineWidth = h * 0.09; ctx.lineCap = 'butt';
+  const aL = h * 0.28;
+  const aY = bY + bH * 0.2;
+  [[-1, armSw + 0.45], [1, -armSw + 0.45]].forEach(([side, angle]) => {
+    ctx.beginPath();
+    ctx.moveTo(x + side * bW * 0.52, aY);
+    ctx.lineTo(x + side * bW * 0.52 + side * Math.sin(angle) * aL,
+               aY + Math.cos(angle) * aL);
+    ctx.stroke();
+    // Hand/Tool
+    ctx.fillStyle = cfg.shirtD;
+    ctx.fillRect(x + side * bW * 0.52 + side * Math.sin(angle) * aL - 3,
+                 aY + Math.cos(angle) * aL - 3, 6, 6);
+  });
+
+  // Head (Blocky Unit)
+  ctx.fillStyle = cfg.color;
+  rrect(x - hdW / 2, hdY, hdW, hdH, 4);
+  ctx.fill(); ctx.stroke();
+  
+  // Snout (Mechanical Scanner)
+  ctx.fillStyle = cfg.color;
+  const snW = hdW * 0.45;
+  const snH = hdH * 0.55;
+  const snX = x + (dir > 0 ? hdW / 2 - 2 : -hdW / 2 - snW + 2);
+  rrect(snX, hdY + hdH * 0.35, snW, snH, 2);
+  ctx.fill(); ctx.stroke();
+
+  // Antenna
+  const antY = hdY - h * 0.12;
+  ctx.strokeStyle = '#475569'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x, hdY); ctx.lineTo(x, antY + h * 0.03); ctx.stroke();
+  ctx.fillStyle = active ? '#fde047' : '#f59e0b';
+  ctx.shadowColor = 'rgba(245, 158, 11, 0.6)'; ctx.shadowBlur = active ? 8 : 3;
+  ctx.beginPath(); ctx.arc(x, antY, h * 0.035, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // LED Eyes (Rectangular)
+  const eyeCol = cfg.eyeColor;
+  const eW = h * 0.08;
+  const eH = h * 0.04;
+  [-.25, .25].forEach(d => {
+    const ex = x + d * hdW + (dir * 4) - eW/2;
+    const ey = hdY + hdH * 0.35;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(ex, ey, eW, eH);
+    ctx.fillStyle = eyeCol;
+    ctx.shadowColor = eyeCol + '88'; ctx.shadowBlur = active ? 8 : 4;
+    ctx.fillRect(ex + 1, ey + 1, eW - 2, eH - 2);
+    ctx.shadowBlur = 0;
+  });
+
+  // Name tag
+  const nSz = Math.max(14, h * 0.22);
+  ctx.font = `900 ${nSz}px Inter,system-ui,sans-serif`;
+  ctx.fillStyle = cfg.color; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  ctx.fillText(cfg.name, x, antY - h * 0.025);
+
+  // Speech bubble
+  if (ag.speech && ag.speechT > 0) {
+    drawBubble(x, antY - h * 0.025 - nSz - 2, ag.speech, cfg.color);
+  }
+
+  ctx.restore();
+}
+
+function drawBubble(cx, tipY, text, color) {
+  const sz    = Math.max(11, H() * 0.088);
+  const maxW  = Math.min(W() * 0.38, 420);
+  const pad   = 11;
+  const lineH = sz * 1.38;
+  ctx.font    = `600 ${sz}px Inter,system-ui,sans-serif`;
+
+  const words = text.split(' ');
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const candidate = cur ? cur + ' ' + w : w;
+    if (ctx.measureText(candidate).width > maxW - pad * 2 && cur) {
+      lines.push(cur); cur = w;
+    } else {
+      cur = candidate;
+    }
+  }
+  if (cur) lines.push(cur);
+
+  const innerW = Math.max(...lines.map(l => ctx.measureText(l).width));
+  const bw = innerW + pad * 2;
+  const bh = lines.length * lineH + pad * 1.2;
+
+  const bx = Math.max(4, Math.min(W() - bw - 4, cx - bw / 2));
+  const by = Math.max(4, tipY - bh - 8);
+
+  // High contrast bubble
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+  rrect(bx, by, bw, bh, 8); ctx.fill(); ctx.stroke();
+
+  // Tail
+  const tx = Math.max(bx + 9, Math.min(bx + bw - 9, cx));
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
+  ctx.beginPath(); ctx.moveTo(tx - 5, tipY); ctx.lineTo(tx + 5, tipY); ctx.lineTo(tx, by + bh + 1); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = color; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(tx - 4, tipY - 1); ctx.lineTo(tx, by + bh + 1); ctx.lineTo(tx + 4, tipY - 1); ctx.stroke();
+
+  // Text
+  ctx.fillStyle = '#0f172a'; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  lines.forEach((line, i) => {
+    ctx.fillText(line, bx + pad, by + pad * 0.6 + i * lineH);
+  });
+}
+
+// ── Main loop ─────────────────────────────────────────────────────────────────
+
+function tick() {
+  ctx.clearRect(0, 0, W(), H());
+  drawBg();
+  tickLogs();
+  drawLogs();
+
+  for (const id of Object.keys(litStations)) {
+    litStations[id]--;
+    if (litStations[id] <= 0) delete litStations[id];
+  }
+
+  STATION_DEFS.forEach(s => drawStation(stations[s.id]));
+
+  const now = Date.now();
+  for (const name of ['DinoAgent', 'CIAgent', 'CDAgent']) {
+    const ag = A[name];
+    if (!ag) continue;
+    // Idle fade: invisible after 30s, fades out over 3s
+    const idle = (now - ag.lastSeen) / 1000;
+    ag.alpha = idle > 33 ? 0 : idle > 30 ? 1 - (idle - 30) / 3 : 1;
+
+    ag.targetX = Math.max(30, Math.min(W() - 30, ag.targetX));
+    const dx = ag.targetX - ag.x;
+    if (Math.abs(dx) > 1.5) {
+      ag.x      += dx * 0.082;
+      ag.walkF  += 1;
+      ag.working = false;
+    } else {
+      ag.x       = ag.targetX;
+      ag.working = true;
+      ag.walkF  += 0.4;
+    }
+    ag.x = Math.max(30, Math.min(W() - 30, ag.x));
+    if (ag.speechT > 0) ag.speechT--; else ag.speech = '';
+    drawRobot(name);
+  }
+
+  drawMsgLog();
+  requestAnimationFrame(tick);
+}
+
+// ── Event helpers ─────────────────────────────────────────────────────────────
+
+function goTo(name, stationId, speech, frames = 480) {
+  const st = stations[stationId];
+  if (!st || !A[name]) return;
+  A[name].targetX  = st.x;
+  A[name].lastSeen = Date.now();
+  if (speech) say(name, speech);
+  lightStation(stationId, frames);
+}
+
+function say(name, text, ms = 6000) {
+  if (!A[name]) return;
+  A[name].speech   = text;
+  A[name].speechT  = ms / (1000 / 60);
+  A[name].lastSeen = Date.now();
+  addLog(name, text);
+}
+
+function stationOf(text) {
+  const t = text.toLowerCase();
+  // Source: writing / editing code
+  if (/writing branch|paginat|fix:|edit file|patch code|writing code|write code|writing a fix|add.*limit/.test(t)) return 'source';
+  // Cloud Build: image building, artifact registry
+  if (/cloud build|docker|artifact|registry|image push|build success/.test(t))             return 'cbuild';
+  // Testing: test runs
+  if (/pytest|\/42 passed|\d+ test|lint|test suite/.test(t))                               return 'testing';
+  // Cloud Run: deploys and traffic
+  if (/deploy|revision.*deploy|traffic|canary|pre.scal|cloud run|spa asset|promote/.test(t)) return 'crun';
+  // Cloud General: error investigation, monitoring, memory, GCP
+  if (/monitor|error rate|latency|p95|metric|oom|log|heap|crash|risk|resolve gcp|pulling cloud|root cause|memory/.test(t)) return 'cloud';
+  // GitHub: everything else code-collaboration
+  if (/github|pr |pull request|branch|commit|push|release|classify|scope|security scan|secret|report|summary/.test(t)) return 'github';
+  return null;
+}
+
+// ── SSE event handler ─────────────────────────────────────────────────────────
+
+function handleEvent(ev) {
+  const { agent, event_type: type, payload: p = {} } = ev;
+  if (!A[agent]) return;
+
+  switch (type) {
+
+    case 'chat_message_received':
+      // Just a speech bubble — no station walk needed
+      say(agent, `💬 ${(p.message || '').slice(0, 44)}`);
+      break;
+
+    case 'thinking': {
+      const s  = p.summary || '';
+      const lo = s.toLowerCase();
+      // Error/log investigation always routes to Cloud General and spawns log particles
+      let st = /oom|root cause|log|heap|crash|leak|monitoring|pulling cloud/.test(lo)
+             ? 'cloud' : stationOf(s);
+      if (st) goTo(agent, st, `💭 ${s.slice(0, 42)}`);
+      else    say(agent, `💭 ${s.slice(0, 44)}`);
+      break;
+    }
+
+    case 'pipeline_step': {
+      const step = p.step || '';
+      const st   = stationOf(step);
+      if (st) goTo(agent, st, step.slice(0, 44));
+      else    say(agent, step.slice(0, 44));
+      break;
+    }
+
+    case 'gate_passed':
+      say(agent, `🔓 ${p.gate}: ${p.decision || 'Y'} — ${(p.summary || '').slice(0, 28)}`);
+      break;
+
+    case 'a2a_call_sent': {
+      const tgt = p.target_agent;
+      if (!A[tgt]) break;
+      const msg = (p.args_preview || p.method || '').slice(0, 38);
+      // Save where we came from
+      A[agent].returnX = A[agent].targetX;
+      // Walk toward the target agent
+      const dir = A[agent].x < A[tgt].x ? 1 : -1;
+      A[agent].targetX = A[tgt].x - dir * 34;
+      // Both agents show dialog bubbles
+      say(agent, `→ ${tgt.replace('Agent', '')}: ${msg}`, 5500);
+      say(tgt,   `⏳ receiving from ${agent.replace('Agent', '')}…`, 3000);
+      // Return home after conversation
+      setTimeout(() => { if (A[agent]) A[agent].targetX = A[agent].returnX; }, 6000);
+      break;
+    }
+
+    case 'a2a_call_received': {
+      const from = (p.from_agent || '').replace('Agent', '') || 'unknown';
+      const preview = (p.message_preview || p.args_preview || '').slice(0, 36);
+      say(agent, `✓ ${from}: ${preview}`);
+      break;
+    }
+
+    case 'traffic_shifted':
+      goTo(agent, 'crun', `🚦 ${p.service} → ${p.percent}%`);
+      break;
+
+    case 'memory_written':
+      goTo(agent, 'cloud', `✦ saved: ${(p.summary || p.key || 'pattern').slice(0, 34)}`);
+      break;
+
+    case 'skill_registered':
+      say(agent, `✦ new skill: ${p.skill_name}`);
+      break;
+
+    case 'detected_error':
+    case 'skill_invoked':
+      goTo(agent, 'cloud', `🚨 ${(p.error_preview || '').slice(0, 42)}`);
+      break;
+
+    default:
+      say(agent, type.replace(/_/g, ' '));
+  }
+}
+
+// ── SSE connection ────────────────────────────────────────────────────────────
+
+function connect() {
+  const es = new EventSource('/events');
+  es.onmessage = ({ data }) => {
+    try {
+      const ev = JSON.parse(data);
+      if (!ev.keepalive) handleEvent(ev);
+    } catch (_) {}
+  };
+  es.onerror = () => { es.close(); setTimeout(connect, 3000); };
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+resize();
+window.addEventListener('resize', resize);
+requestAnimationFrame(tick);
+connect();
+</script>
+</body>
+</html>
