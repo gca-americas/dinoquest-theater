@@ -449,13 +449,19 @@ function drawRobot(name) {
 }
 
 function drawBubble(cx, tipY, text, color) {
-  const sz    = Math.max(11, H() * 0.088);
-  const maxW  = Math.min(W() * 0.38, 420);
-  const pad   = 11;
-  const lineH = sz * 1.38;
-  ctx.font    = `600 ${sz}px Inter,system-ui,sans-serif`;
+  // Detect A2A prefix for large badge rendering
+  let badge = '';
+  let mainText = text;
+  if (text.startsWith('A2A ')) { badge = 'A2A'; mainText = text.slice(4); }
 
-  const words = text.split(' ');
+  const sz      = Math.max(11, H() * 0.088);
+  const badgeSz = sz * 1.8;
+  const maxW    = Math.min(W() * 0.38, 420);
+  const pad     = 11;
+  const lineH   = sz * 1.38;
+  ctx.font      = `600 ${sz}px Inter,system-ui,sans-serif`;
+
+  const words = mainText.split(' ');
   const lines = [];
   let cur = '';
   for (const w of words) {
@@ -468,9 +474,18 @@ function drawBubble(cx, tipY, text, color) {
   }
   if (cur) lines.push(cur);
 
-  const innerW = Math.max(...lines.map(l => ctx.measureText(l).width));
+  // Measure badge width
+  let badgeW = 0, badgeH = 0;
+  if (badge) {
+    ctx.font = `900 ${badgeSz}px Inter,system-ui,sans-serif`;
+    badgeW = ctx.measureText(badge).width;
+    badgeH = badgeSz * 1.25;
+    ctx.font = `600 ${sz}px Inter,system-ui,sans-serif`;
+  }
+
+  const innerW = Math.max(badgeW, ...lines.map(l => ctx.measureText(l).width));
   const bw = innerW + pad * 2;
-  const bh = lines.length * lineH + pad * 1.2;
+  const bh = (badge ? badgeH : 0) + lines.length * lineH + pad * 1.2;
 
   const bx = Math.max(4, Math.min(W() - bw - 4, cx - bw / 2));
   const by = Math.max(4, tipY - bh - 8);
@@ -487,10 +502,21 @@ function drawBubble(cx, tipY, text, color) {
   ctx.strokeStyle = color; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(tx - 4, tipY - 1); ctx.lineTo(tx, by + bh + 1); ctx.lineTo(tx + 4, tipY - 1); ctx.stroke();
 
-  // Text
+  // Large A2A badge
+  let textOffsetY = 0;
+  if (badge) {
+    ctx.font = `900 ${badgeSz}px Inter,system-ui,sans-serif`;
+    ctx.fillStyle = color;
+    ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    ctx.fillText(badge, bx + pad, by + pad * 0.6);
+    textOffsetY = badgeH;
+  }
+
+  // Main text
+  ctx.font = `600 ${sz}px Inter,system-ui,sans-serif`;
   ctx.fillStyle = '#0f172a'; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
   lines.forEach((line, i) => {
-    ctx.fillText(line, bx + pad, by + pad * 0.6 + i * lineH);
+    ctx.fillText(line, bx + pad, by + pad * 0.6 + textOffsetY + i * lineH);
   });
 }
 
@@ -558,8 +584,8 @@ function say(name, text, ms = 6000) {
 
 function stationOf(text) {
   const t = text.toLowerCase();
-  // Source: writing / editing code
-  if (/writing branch|paginat|fix:|edit file|patch code|writing code|write code|writing a fix|add.*limit/.test(t)) return 'source';
+  // Source: writing / editing code + CD final report
+  if (/writing branch|paginat|fix:|edit file|patch code|writing code|write code|writing a fix|add.*limit|cd report/.test(t)) return 'source';
   // Cloud Build: image building, artifact registry
   if (/cloud build|docker|artifact|registry|image push|build success/.test(t))             return 'cbuild';
   // Testing: test runs
@@ -619,8 +645,8 @@ function handleEvent(ev) {
       const dir = A[agent].x < A[tgt].x ? 1 : -1;
       A[agent].targetX = A[tgt].x - dir * 34;
       // Both agents show dialog bubbles
-      say(agent, `→ ${tgt.replace('Agent', '')}: ${msg}`, 5500);
-      say(tgt,   `⏳ receiving from ${agent.replace('Agent', '')}…`, 3000);
+      say(agent, `A2A → ${tgt.replace('Agent', '')}: ${msg}`, 5500);
+      say(tgt,   `A2A ⏳ from ${agent.replace('Agent', '')}…`, 3000);
       // Return home after conversation
       setTimeout(() => { if (A[agent]) A[agent].targetX = A[agent].returnX; }, 6000);
       break;
@@ -629,7 +655,7 @@ function handleEvent(ev) {
     case 'a2a_call_received': {
       const from = (p.from_agent || '').replace('Agent', '') || 'unknown';
       const preview = (p.message_preview || p.args_preview || '').slice(0, 36);
-      say(agent, `✓ ${from}: ${preview}`);
+      say(agent, `A2A ✓ ${from}: ${preview}`);
       break;
     }
 

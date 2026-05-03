@@ -32,14 +32,70 @@ Every message on `harness-events` is a JSON-encoded string with this shape:
 | `event_type` | Emitted by | Key payload fields |
 |---|---|---|
 | `chat_message_received` | DinoAgent | `message`, `user`, `space` |
-| `skill_invoked` | any | `error_preview` or `trigger` |
-| `thinking` | any | `summary` (abbreviated final response) |
-| `a2a_call_sent` | DinoAgent | `target_agent`, `method`, `args_preview` |
+| `detected_error` | DinoAgent | `error_preview` |
+| `thinking` | any | `summary` |
+| `pipeline_step` | any | `step` |
+| `a2a_call_sent` | DinoAgent, CIAgent | `target_agent`, `method`, `args_preview` |
 | `a2a_call_received` | CIAgent, CDAgent | `from_agent`, `method`, `args_preview` |
-| `capability_discovered` | any | `capabilities` (list) |
 | `skill_registered` | CIAgent | `skill_name`, `description` |
 | `memory_written` | CDAgent | `collection`, `key`, `summary` |
 | `traffic_shifted` | CDAgent | `service`, `revision`, `percent` |
+
+---
+
+## Station routing
+
+Each event is routed to one of six stations based on its text content. `pipeline_step` events go directly to `stationOf()`; `thinking` events first check the cloud override (any text matching `oom|root cause|log|heap|crash|leak|monitoring|pulling cloud` → **Cloud**), then fall through to `stationOf()`.
+
+### RemediationAgent (agent = `DinoAgent`)
+
+| Tool / trigger | Event type | Sample text | Station |
+|---|---|---|---|
+| Pub/Sub message received | `detected_error` | `🚨 <error_preview>` | **Cloud** |
+| `clone_repo` | `pipeline_step` | `fix: cloning repository` | **Source** |
+| `apply_code_fix` | `pipeline_step` | `fix: editing backend/main.py` | **Source** |
+| `rollback_fix` | `pipeline_step` | `fix: reverting branch incident_26050202` | **Source** |
+| `rollback_traffic` | `thinking` | `Rolling back Cloud Run svc → rev (100% traffic)` | **Cloud Run** |
+| `update_service_env_vars` | `thinking` | `Updating Cloud Run svc env vars: KEY` | **Cloud Run** |
+| `update_service_resources` | `thinking` | `Patching Cloud Run service svc: memory → 2Gi` | **Cloud Run** |
+| `commit_to_incident_branch` | `thinking` | `Pushing branch: committing fix — <msg>` | **GitHub** |
+| `open_pull_request` | `thinking` | `Opening pull request: <title>` | **GitHub** |
+| `announce_a2a_to_ci` | `a2a_call_sent` | *(A2A badge + animated dot to CIAgent)* | — |
+
+### CIAgent
+
+| Tool / trigger | Event type | Sample text | Station |
+|---|---|---|---|
+| `get_pr` | `thinking` | `Generating summary for PR #42` | **GitHub** |
+| `get_pr_files` | `thinking` | `Detecting changed files in PR #42` | **GitHub** |
+| `scan_pr_diff` | `thinking` | `Classifying scope and security scan of PR #42 diff` | **GitHub** |
+| `post_pr_comment` | `thinking` | `Posting CI report to GitHub PR #42` | **GitHub** |
+| `submit_build` | `thinking` | `Submitting Cloud Build job for branch incident_xxx` | **Cloud Build** |
+| `run_ci_backend_tests` | `pipeline_step` | `Cloud Build: running backend pytest for incident_xxx` | **Cloud Build** |
+| `get_ci_build_status` | `thinking` | `Running test suite — polling build abc123` | **Testing** |
+| `announce_a2a_to_cd` | `a2a_call_sent` | *(A2A badge + animated dot to CDAgent)* | — |
+
+### CDAgent
+
+| Tool / trigger | Event type | Sample text | Station |
+|---|---|---|---|
+| `deploy_revision` | `thinking` | `Deploying new revision for dinoquest-backend` | **Cloud Run** |
+| `shift_traffic` | `thinking` | `Shifting 10% traffic to revision-xyz` | **Cloud Run** |
+| `poll_metrics` | `thinking` | `Polling canary metrics for revision-xyz` | **Cloud Run** |
+| `write_pattern` | `pipeline_step` | `cd report: deployment pattern saved` | **Source** |
+| `create_release` | `thinking` | `Creating GitHub release v1.2.3` | **GitHub** |
+| Final agent response | `pipeline_step` | `CD report: <summary>` | **Source** |
+
+### `stationOf()` keyword map
+
+| Station | Matching keywords |
+|---|---|
+| **Source** | `fix:`, `edit file`, `patch code`, `writing code`, `write code`, `writing a fix`, `writing branch`, `cd report`, `paginat`, `add.*limit` |
+| **Cloud Build** | `cloud build`, `docker`, `artifact`, `registry`, `image push`, `build success` |
+| **Testing** | `pytest`, `\d+ test`, `test suite`, `lint` |
+| **Cloud Run** | `deploy`, `traffic`, `canary`, `cloud run`, `spa asset`, `promote`, `revision.*deploy`, `pre.scal` |
+| **Cloud** | `monitor`, `error rate`, `latency`, `p95`, `metric`, `oom`, `log`, `heap`, `crash`, `risk`, `resolve gcp`, `pulling cloud`, `root cause`, `memory` |
+| **GitHub** | `github`, `pr `, `pull request`, `branch`, `commit`, `push`, `release`, `classify`, `scope`, `security scan`, `secret`, `report`, `summary` |
 
 ---
 
