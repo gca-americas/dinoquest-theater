@@ -26,6 +26,52 @@ SUBSCRIPTION = os.environ.get(
     f"projects/{PROJECT}/subscriptions/harness-events-theater" if PROJECT else "",
 )
 
+# ── Firestore persistence ──────────────────────────────────────────────────────
+
+_FS_COLLECTION = "dino_theater"
+_FS_DOCUMENT   = "event_cache"
+
+_fs_client = None
+_fs_lock   = threading.Lock()
+
+
+def _get_fs():
+    global _fs_client
+    with _fs_lock:
+        if _fs_client is None and PROJECT:
+            try:
+                from google.cloud import firestore
+                _fs_client = firestore.Client(project=PROJECT)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Firestore init failed: %s", exc)
+        return _fs_client
+
+
+def _save_to_firestore(events: list) -> None:
+    db = _get_fs()
+    if db is None:
+        return
+    try:
+        db.collection(_FS_COLLECTION).document(_FS_DOCUMENT).set({"events": events})
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Firestore save failed: %s", exc)
+
+
+def _load_from_firestore() -> list | None:
+    db = _get_fs()
+    if db is None:
+        return None
+    try:
+        doc = db.collection(_FS_COLLECTION).document(_FS_DOCUMENT).get()
+        if doc.exists:
+            return doc.to_dict().get("events")
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Firestore load failed: %s", exc)
+    return None
+
 _clients: list[queue.Queue] = []
 _clients_lock = threading.Lock()
 
@@ -311,9 +357,10 @@ DEMO_EVENTS = [
 
 import copy
 
-# Cached event sequence — starts as the built-in DEMO_EVENTS, can be replaced
-# via POST /cache.  Each entry keeps its "delay" key; we never mutate it.
-_event_cache: list[dict] = copy.deepcopy(DEMO_EVENTS)
+# Cached event sequence — starts as the built-in DEMO_EVENTS (or last saved
+# recording loaded from Firestore).  Each entry keeps its "delay" key.
+_saved = _load_from_firestore()
+_event_cache: list[dict] = copy.deepcopy(_saved) if _saved else copy.deepcopy(DEMO_EVENTS)
 
 _demo_speed = 3.0   # multiplier; 1.0 = real-time, 3.0 = 3× slower
 
@@ -421,6 +468,7 @@ def record_stop():
         captured   = list(_record_buf)
     if save and captured:
         _event_cache = captured
+        _save_to_firestore(captured)
     return {"ok": True, "recording": False, "captured": len(captured), "saved": save and bool(captured)}
 
 

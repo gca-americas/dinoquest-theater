@@ -609,7 +609,7 @@ function handleEvent(ev) {
 
     case 'chat_message_received':
       // Just a speech bubble — no station walk needed
-      say(agent, `💬 ${(p.message || '').slice(0, 44)}`);
+      say(agent, `💬 ${(p.message || '').slice(0, 120)}`);
       break;
 
     case 'thinking': {
@@ -618,27 +618,27 @@ function handleEvent(ev) {
       // Error/log investigation always routes to Cloud General and spawns log particles
       let st = /oom|root cause|log|heap|crash|leak|monitoring|pulling cloud/.test(lo)
              ? 'cloud' : stationOf(s);
-      if (st) goTo(agent, st, `💭 ${s.slice(0, 42)}`);
-      else    say(agent, `💭 ${s.slice(0, 44)}`);
+      if (st) goTo(agent, st, `💭 ${s.slice(0, 120)}`);
+      else    say(agent, `💭 ${s.slice(0, 120)}`);
       break;
     }
 
     case 'pipeline_step': {
       const step = p.step || '';
       const st   = stationOf(step);
-      if (st) goTo(agent, st, step.slice(0, 44));
-      else    say(agent, step.slice(0, 44));
+      if (st) goTo(agent, st, step.slice(0, 120));
+      else    say(agent, step.slice(0, 120));
       break;
     }
 
     case 'gate_passed':
-      say(agent, `🔓 ${p.gate}: ${p.decision || 'Y'} — ${(p.summary || '').slice(0, 28)}`);
+      say(agent, `🔓 ${p.gate}: ${p.decision || 'Y'} — ${(p.summary || '').slice(0, 80)}`);
       break;
 
     case 'a2a_call_sent': {
       const tgt = p.target_agent;
       if (!A[tgt]) break;
-      const msg = (p.args_preview || p.method || '').slice(0, 38);
+      const msg = (p.args_preview || p.method || '').slice(0, 100);
       // Save where we came from
       A[agent].returnX = A[agent].targetX;
       // Walk toward the target agent
@@ -654,7 +654,7 @@ function handleEvent(ev) {
 
     case 'a2a_call_received': {
       const from = (p.from_agent || '').replace('Agent', '') || 'unknown';
-      const preview = (p.message_preview || p.args_preview || '').slice(0, 36);
+      const preview = (p.message_preview || p.args_preview || '').slice(0, 100);
       say(agent, `A2A ✓ ${from}: ${preview}`);
       break;
     }
@@ -664,7 +664,7 @@ function handleEvent(ev) {
       break;
 
     case 'memory_written':
-      goTo(agent, 'cloud', `✦ saved: ${(p.summary || p.key || 'pattern').slice(0, 34)}`);
+      goTo(agent, 'cloud', `✦ saved: ${(p.summary || p.key || 'pattern').slice(0, 100)}`);
       break;
 
     case 'skill_registered':
@@ -673,7 +673,7 @@ function handleEvent(ev) {
 
     case 'detected_error':
     case 'skill_invoked':
-      goTo(agent, 'cloud', `🚨 ${(p.error_preview || '').slice(0, 42)}`);
+      goTo(agent, 'cloud', `🚨 ${(p.error_preview || '').slice(0, 120)}`);
       break;
 
     default:
