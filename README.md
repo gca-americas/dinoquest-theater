@@ -505,6 +505,65 @@ if the SSE stream drops.
 
 ---
 
+## Sample Pipeline Run — incident_2605051411 (2026-05-05)
+
+Full end-to-end run triggered by an OOM on `dinoquest`. All gaps and active durations > 30 s are
+capped to 30 s for demo pacing (marked ✂️ with the actual time in parentheses).
+Raw totals: 22 m 1 s wall-clock; ~10 m 31 s active.
+
+| # | Agent | Time | ← gap | Active | Station | Event | Detail |
+|---|---|---|---|---|---|---|---|
+| 1 | RemediationAgent | 14:11:21 | — | — | ☁️ Cloud | Event received | OOM 128→130 MiB on dinoquest |
+| 2 | RemediationAgent | 14:11:26 | 5 s | 5 s | 🚀 Cloud Run | Memory bump | 128Mi → 256Mi via `update_service_resources` |
+| 3 | RemediationAgent | 14:11:26–14:12:32 | 0 s | 30 s ✂️ (66 s) | 💾 Source | Root-cause track | clone→read→fix→test→commit→PR #65 |
+| 4 | RemediationAgent | 14:12:39 | 7 s | — | 🐙 GitHub + A2A dot | Handoff | Slack notification + A2A to CIAgent |
+| — | *transit* | 14:12:39–14:13:57 | 0 s | 30 s ✂️ (78 s) | *(A2A dot in flight)* | Remediation → CI | CIAgent warm instance startup |
+| 5 | CIAgent | 14:13:57 | 0 s | — | *(A2A badge)* | Session started | A2A call received from RemediationAgent |
+| 6 | CIAgent | 14:14:29–14:15:09 | 30 s ✂️ (32 s) | 30 s ✂️ (40 s) | 🐙 GitHub | `list_prs` | 1 SSL retry; found PR #65 |
+| 7 | CIAgent | 14:16:05–14:18:27 | 30 s ✂️ (56 s) | 30 s ✂️ (2 m 22 s) | 🐙 GitHub | `scan_pr_diff` | SSL retries; diff_len=2644 chars |
+| 8 | CIAgent | 14:19:22–14:19:44 | 30 s ✂️ (55 s) | 22 s | 🐙 GitHub | `post_pr_comment` | PR summary posted — HTTP 201 |
+| 9 | CIAgent | 14:20:33–14:21:39 | 30 s ✂️ (49 s) | 30 s ✂️ (1 m 6 s) | 🏗️ Cloud Build | `run_ci_backend_tests` | pytest SUCCESS — all tests passed |
+| 10 | CIAgent | 14:22:26–14:24:56 | 30 s ✂️ (47 s) | 30 s ✂️ (2 m 30 s) | 🏗️ Cloud Build → 🧪 Testing | `submit_build` + poll | Cloud Build Docker image — SUCCESS |
+| 11 | CIAgent | 14:25:49–14:26:03 | 30 s ✂️ (53 s) | 14 s | 🏗️ Cloud Build | `verify_image` | app:latest confirmed in Artifact Registry |
+| 12 | CIAgent | 14:26:51 | 30 s ✂️ (48 s) | — | 🐙 GitHub | `post_commit_status` | GitHub commit status → success |
+| 13 | CIAgent | 14:28:02–14:28:24 | 30 s ✂️ (1 m 11 s) | 22 s | 🐙 GitHub | `post_pr_comment` | CI Pipeline Report posted — HTTP 201 |
+| 14 | CIAgent | 14:32:32 | 30 s ✂️ (4 m 8 s) | — | *(A2A dot)* | CDAgent A2A | `announce_a2a_to_cd` — HTTP 200 ACK |
+| 15 | CIAgent | 14:32:34 | 2 s | — | — | Runner closed | CIAgent session complete |
+| — | *transit* | 14:32:34–14:32:35 | 0 s | 1 s | *(A2A dot in flight)* | CI → CD | A2A over internal Cloud Run network |
+| 16 | CDAgent | 14:32:35 | 0 s | — | 🚀 Cloud Run | `get_stable_revision` | dinoquest-00006-jxr identified as stable |
+| 17 | CDAgent | 14:32:37 | 2 s | 2 s | 💾 Source | `read_patterns` | no matching deployment pattern found |
+| 18 | CDAgent | 14:32:40–14:33:04 | 3 s | 24 s | 🚀 Cloud Run | `deploy_revision` | dinoquest-00007-l87 deployed successfully |
+| 19 | CDAgent | 14:33:06–14:33:10 | 2 s | 4 s | 🚀 Cloud Run | `shift_traffic` 50% | canary live — 50% to new revision |
+| 20 | CDAgent | 14:33:11 | 1 s | — | 🚀 Cloud Run | `poll_metrics` | 0% error rate — verdict OK, promoting |
+| 21 | CDAgent | 14:33:14–14:33:19 | 3 s | 5 s | 🚀 Cloud Run | `shift_traffic` 100% | promoted — new revision live |
+| 22 | CDAgent | 14:33:22 | 3 s | — | 💾 Source | `write_pattern` | deployment pattern saved to Firestore |
+
+**Total wall-clock:** 14:11:21 → 14:33:22 = **22 m 1 s**  
+**Outcome:** PR #65 merged; `dinoquest-00007-l87` at 100% traffic.  
+**Persisted:** `demo_pipeline_runs/incident_2605051411` in Firestore (`io26-keynote-demo-staging`).
+
+### Recording a new pipeline run
+
+After a live incident, record the run to Firestore for demo replay:
+
+```bash
+# 1. Activate the RemediationAgent venv (it has google-cloud-firestore)
+cd /Users/christina/Desktop/work/io
+source RemediationAgent/.venv/bin/activate
+
+# 2. Edit record_pipeline_run.py — update RUN_ID, timestamps, and step details
+
+# 3. Run it (uses Application Default Credentials from gcloud auth)
+GOOGLE_CLOUD_PROJECT=io26-keynote-demo-staging python3 record_pipeline_run.py
+# → Wrote summary to demo_pipeline_runs/<run_id>
+# → Wrote N steps to demo_pipeline_runs/<run_id>/steps/
+```
+
+The script lives at `/Users/christina/Desktop/work/io/record_pipeline_run.py`.
+All runs land in the `demo_pipeline_runs` Firestore collection under the `io26-keynote-demo-staging` project.
+
+---
+
 ## Reset between dress rehearsals
 
 Discard all backlogged messages so the next run starts clean:
