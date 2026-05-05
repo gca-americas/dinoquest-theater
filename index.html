@@ -162,6 +162,9 @@ function drawMsgLog() {
 
   ctx.font = `600 ${sz}px Inter,system-ui,sans-serif`;
   ctx.textBaseline = 'middle';
+  ctx.save();
+  rrect(x0, y0, w0, logH, 16);
+  ctx.clip();
   for (let i = 0; i < vis; i++) {
     const m   = msgLog[i];
     const age = (Date.now() - m.ts) / 1000;
@@ -174,6 +177,7 @@ function drawMsgLog() {
     ctx.fillStyle = '#0f172a';
     ctx.fillText(m.text, x0 + 14 + ctx.measureText(tag).width, ty);
   }
+  ctx.restore();
   ctx.globalAlpha = 1;
 }
 
@@ -609,7 +613,7 @@ function handleEvent(ev) {
 
     case 'chat_message_received':
       // Just a speech bubble — no station walk needed
-      say(agent, `💬 ${(p.message || '').slice(0, 120)}`);
+      say(agent, `💬 ${p.message || ''}`);
       break;
 
     case 'thinking': {
@@ -618,34 +622,34 @@ function handleEvent(ev) {
       // Error/log investigation always routes to Cloud General and spawns log particles
       let st = /oom|root cause|log|heap|crash|leak|monitoring|pulling cloud/.test(lo)
              ? 'cloud' : stationOf(s);
-      if (st) goTo(agent, st, `💭 ${s.slice(0, 120)}`);
-      else    say(agent, `💭 ${s.slice(0, 120)}`);
+      if (st) goTo(agent, st, `💭 ${s}`);
+      else    say(agent, `💭 ${s}`);
       break;
     }
 
     case 'pipeline_step': {
       const step = p.step || '';
       const st   = stationOf(step);
-      if (st) goTo(agent, st, step.slice(0, 120));
-      else    say(agent, step.slice(0, 120));
+      if (st) goTo(agent, st, step);
+      else    say(agent, step);
       break;
     }
 
     case 'gate_passed':
-      say(agent, `🔓 ${p.gate}: ${p.decision || 'Y'} — ${(p.summary || '').slice(0, 80)}`);
+      say(agent, `🔓 ${p.gate}: ${p.decision || 'Y'} — ${p.summary || ''}`);
       break;
 
     case 'a2a_call_sent': {
       const tgt = p.target_agent;
       if (!A[tgt]) break;
-      const msg = (p.args_preview || p.method || '').slice(0, 100);
+      const msg = p.args_preview || p.method || '';
       // Save where we came from
       A[agent].returnX = A[agent].targetX;
       // Walk toward the target agent
       const dir = A[agent].x < A[tgt].x ? 1 : -1;
       A[agent].targetX = A[tgt].x - dir * 34;
       // Both agents show dialog bubbles
-      say(agent, `A2A → ${tgt.replace('Agent', '')}: ${msg}`, 5500);
+      say(agent, `A2A → ${tgt.replace('Agent', '')}: ${p.args_preview || p.method || ''}`, 5500);
       say(tgt,   `A2A ⏳ from ${agent.replace('Agent', '')}…`, 3000);
       // Return home after conversation
       setTimeout(() => { if (A[agent]) A[agent].targetX = A[agent].returnX; }, 6000);
@@ -654,7 +658,7 @@ function handleEvent(ev) {
 
     case 'a2a_call_received': {
       const from = (p.from_agent || '').replace('Agent', '') || 'unknown';
-      const preview = (p.message_preview || p.args_preview || '').slice(0, 100);
+      const preview = p.message_preview || p.args_preview || '';
       say(agent, `A2A ✓ ${from}: ${preview}`);
       break;
     }
@@ -664,7 +668,7 @@ function handleEvent(ev) {
       break;
 
     case 'memory_written':
-      goTo(agent, 'cloud', `✦ saved: ${(p.summary || p.key || 'pattern').slice(0, 100)}`);
+      goTo(agent, 'cloud', `✦ saved: ${p.summary || p.key || 'pattern'}`);
       break;
 
     case 'skill_registered':
@@ -673,7 +677,7 @@ function handleEvent(ev) {
 
     case 'detected_error':
     case 'skill_invoked':
-      goTo(agent, 'cloud', `🚨 ${(p.error_preview || '').slice(0, 120)}`);
+      goTo(agent, 'cloud', `🚨 ${p.error_preview || ''}`);
       break;
 
     default:
