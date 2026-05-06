@@ -136,11 +136,20 @@ This plays the built-in 35-event keynote sequence — DinoAgent detects an OOM c
 
 ## Demo playback
 
-`/demo` plays the current event cache in order, honoring the `delay` field on each event (seconds to wait before sending it). The default speed multiplier is 3× (i.e. delays are tripled).
+The theater holds **two named event sets** (set 1 and set 2), each stored in a separate Firestore document and loaded on startup. You can record each set independently and switch between them instantly using keyboard shortcuts.
 
-**Play the demo:**
+| Shortcut | Action |
+|---|---|
+| **Ctrl+A** | Play set 1 |
+| **Ctrl+B** | Play set 2 |
+
+Both shortcuts work in the browser window running the theater. `e.preventDefault()` suppresses the browser's default Ctrl+A "select all" behaviour.
+
+**Play via curl:**
 ```bash
-curl http://localhost:8888/demo
+curl http://localhost:8888/demo      # plays set 1 (default)
+curl http://localhost:8888/demo/1   # plays set 1 explicitly
+curl http://localhost:8888/demo/2   # plays set 2
 ```
 
 **Change playback speed** (1.0 = real-time, 3.0 = 3× slower, 0.5 = 2× faster):
@@ -182,40 +191,53 @@ curl -X POST http://localhost:8888/cache/reset
 
 ## Recording live events for replay
 
-When agents are running against real Pub/Sub, you can record the live event stream — with accurate inter-arrival timing — and replay it later as a demo.
+When agents are running against real Pub/Sub, you can record the live event stream — with accurate inter-arrival timing — and save it into set 1 or set 2 for later replay.
 
-**1. Start recording** (clears any previous buffer):
+### Recording into a specific set
+
+**Start recording into set 1 or set 2:**
 ```bash
-curl -X POST http://localhost:8888/record/start
+curl -X POST http://localhost:8888/record/start/1   # record into set 1
+curl -X POST http://localhost:8888/record/start/2   # record into set 2
 ```
 
-**2. Trigger your agents** — run the incident scenario, let the full pipeline execute. Every Pub/Sub event and every `/inject` call is captured with its exact delay (time since previous event, measured with a monotonic clock).
+`/record/start` (no set ID) defaults to set 1.
 
-**3. Check what has been captured so far:**
+**Trigger your agents** — run the incident scenario, let the full pipeline execute. Every Pub/Sub event is captured with its exact inter-arrival delay (monotonic clock).
+
+**Check what has been captured so far:**
 ```bash
 curl http://localhost:8888/record/status
-# → {"recording": true, "buffered": 18, "preview": [...last 3 events...]}
+# → {"recording": true, "buffered": 18, "target_set": "2", "preview": [...last 3 events...]}
 ```
 
-**4. Stop recording and save to the cache:**
+**Stop recording — saves to the target set and its Firestore document:**
 ```bash
 curl -X POST http://localhost:8888/record/stop
-# → {"captured": 34, "saved": true}
+# → {"captured": 34, "saved": true, "target_set": "2"}
 ```
 
-Stop without overwriting the cache (inspect first):
+Stop without saving (inspect first, then decide):
 ```bash
 curl -X POST http://localhost:8888/record/stop \
   -H 'Content-Type: application/json' \
   -d '{"save": false}'
 ```
 
-**5. Play it back with the same timing:**
+**Play back immediately:**
 ```bash
-curl http://localhost:8888/demo
+curl http://localhost:8888/demo/1   # or Ctrl+A in the browser
+curl http://localhost:8888/demo/2   # or Ctrl+B in the browser
 ```
 
-The recording is held in memory — it survives until the server restarts or you call `/record/start` again. To persist it across restarts, save the output of `GET /cache` to a file and restore it via `POST /cache` on next startup.
+### Firestore persistence
+
+| Set | Firestore document | Keyboard shortcut |
+|---|---|---|
+| Set 1 | `dino_theater/event_cache` | Ctrl+A |
+| Set 2 | `dino_theater/event_cache_2` | Ctrl+B |
+
+Both sets are loaded on server startup — switching between them is instant with no Firestore read at play time.
 
 **Inject a single event:**
 
@@ -500,8 +522,8 @@ CDAgent    ──┘              │
 broadcasts each message to all connected SSE clients. The browser reconnects automatically
 if the SSE stream drops.
 
-`GET /demo` replays the event cache (built-in or recorded) with per-event delays.
-`POST /record/start` + `POST /record/stop` captures a live run with real timing for later replay.
+`GET /demo/1` and `GET /demo/2` replay the two named event sets (Ctrl+A / Ctrl+B in browser).
+`POST /record/start/1` (or `/2`) + `POST /record/stop` captures a live run into the target set.
 
 ---
 

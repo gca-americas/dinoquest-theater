@@ -704,6 +704,12 @@ resize();
 window.addEventListener('resize', resize);
 requestAnimationFrame(tick);
 connect();
+
+document.addEventListener('keydown', e => {
+  if (!e.ctrlKey) return;
+  if (e.key === 'a') { e.preventDefault(); fetch('/demo/1'); }
+  if (e.key === 'b') { e.preventDefault(); fetch('/demo/2'); }
+});
 </script>
 </body>
 </html>

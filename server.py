@@ -30,6 +30,7 @@ SUBSCRIPTION = os.environ.get(
 
 _FS_COLLECTION = "dino_theater"
 _FS_DOCUMENT   = "event_cache"
+_FS_DOCUMENT_2 = "event_cache_2"
 
 _fs_client = None
 _fs_lock   = threading.Lock()
@@ -48,23 +49,23 @@ def _get_fs():
         return _fs_client
 
 
-def _save_to_firestore(events: list) -> None:
+def _save_to_firestore(events: list, doc_name: str = _FS_DOCUMENT) -> None:
     db = _get_fs()
     if db is None:
         return
     try:
-        db.collection(_FS_COLLECTION).document(_FS_DOCUMENT).set({"events": events})
+        db.collection(_FS_COLLECTION).document(doc_name).set({"events": events})
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("Firestore save failed: %s", exc)
 
 
-def _load_from_firestore() -> list | None:
+def _load_from_firestore(doc_name: str = _FS_DOCUMENT) -> list | None:
     db = _get_fs()
     if db is None:
         return None
     try:
-        doc = db.collection(_FS_COLLECTION).document(_FS_DOCUMENT).get()
+        doc = db.collection(_FS_COLLECTION).document(doc_name).get()
         if doc.exists:
             return doc.to_dict().get("events")
     except Exception as exc:
@@ -92,12 +93,13 @@ def _broadcast(event: dict) -> None:
 #
 # When _recording is True, every event that passes through _record_event()
 # gets stamped with "delay" = seconds since the previous event arrived.
-# Stop recording to promote the buffer into _event_cache.
+# Stop recording to promote the buffer into the target set.
 
-_recording       = False
+_recording          = False
+_record_target_set  = "1"   # which set to save into on stop
 _record_buf: list[dict] = []
-_record_lock     = threading.Lock()
-_last_record_t   = None   # time.monotonic() of last recorded event
+_record_lock        = threading.Lock()
+_last_record_t      = None   # time.monotonic() of last recorded event
 
 
 def _record_event(event: dict) -> None:
@@ -357,24 +359,37 @@ DEMO_EVENTS = [
 
 import copy
 
-# Cached event sequence — starts as the built-in DEMO_EVENTS (or last saved
-# recording loaded from Firestore).  Each entry keeps its "delay" key.
-_saved = _load_from_firestore()
-_event_cache: list[dict] = copy.deepcopy(_saved) if _saved else copy.deepcopy(DEMO_EVENTS)
+# Two named event sets loaded from Firestore on startup.
+# Set 1 = event_cache (the original recording), Set 2 = event_cache_2.
+_saved_1 = _load_from_firestore(_FS_DOCUMENT)
+_saved_2 = _load_from_firestore(_FS_DOCUMENT_2)
+
+_event_sets: dict[str, list[dict]] = {
+    "1": copy.deepcopy(_saved_1) if _saved_1 else copy.deepcopy(DEMO_EVENTS),
+    "2": copy.deepcopy(_saved_2) if _saved_2 else [],
+}
+
+# Keep _event_cache as an alias for set 1 so existing /cache endpoints still work.
+_event_cache: list[dict] = _event_sets["1"]
 
 _demo_speed = 3.0   # multiplier; 1.0 = real-time, 3.0 = 3× slower
 
 
-@app.route("/demo")
-def demo():
-    """Play the cached event sequence."""
-    def play():
-        for ev in _event_cache:
-            delay = ev.get("delay", 1.5)   # get, not pop — never mutate
-            time.sleep(delay * _demo_speed)
-            _broadcast({k: v for k, v in ev.items() if k != "delay"})
+def _play_set(set_id: str) -> None:
+    events = _event_sets.get(set_id, [])
+    for ev in events:
+        delay = ev.get("delay", 1.5)
+        time.sleep(delay * _demo_speed)
+        _broadcast({k: v for k, v in ev.items() if k != "delay"})
 
-    threading.Thread(target=play, daemon=True).start()
+
+@app.route("/demo")
+@app.route("/demo/<set_id>")
+def demo(set_id: str = "1"):
+    """Play a cached event set. set_id: '1' or '2' (default '1')."""
+    if set_id not in _event_sets:
+        return {"error": f"unknown set '{set_id}'"}, 404
+    threading.Thread(target=_play_set, args=(set_id,), daemon=True).start()
     return ("", 204)
 
 
@@ -437,26 +452,29 @@ def reset_cache():
 # ── Recording endpoints ───────────────────────────────────────────────────────
 
 @app.route("/record/start", methods=["POST"])
-def record_start():
-    """Start recording live Pub/Sub events with inter-arrival delays.
+@app.route("/record/start/<set_id>", methods=["POST"])
+def record_start(set_id: str = "1"):
+    """Start recording live Pub/Sub events into the given set (1 or 2).
 
-    Clears any previous recording buffer first.
-
-        curl -X POST http://localhost:8888/record/start
+        curl -X POST http://localhost:8888/record/start/1
+        curl -X POST http://localhost:8888/record/start/2
     """
-    global _recording, _record_buf, _last_record_t
+    global _recording, _record_buf, _last_record_t, _record_target_set
+    if set_id not in _event_sets:
+        return {"error": f"unknown set '{set_id}'"}, 404
     with _record_lock:
-        _recording     = True
-        _record_buf    = []
-        _last_record_t = None
-    return {"ok": True, "recording": True}
+        _recording          = True
+        _record_target_set  = set_id
+        _record_buf         = []
+        _last_record_t      = None
+    return {"ok": True, "recording": True, "target_set": set_id}
 
 
 @app.route("/record/stop", methods=["POST"])
 def record_stop():
-    """Stop recording and promote the buffer to the event cache.
+    """Stop recording and promote the buffer into the target set.
 
-    Optional body: {"save": false} to stop without overwriting the cache.
+    Optional body: {"save": false} to stop without saving to Firestore.
 
         curl -X POST http://localhost:8888/record/stop
     """
@@ -466,10 +484,15 @@ def record_stop():
     with _record_lock:
         _recording = False
         captured   = list(_record_buf)
+        target     = _record_target_set
     if save and captured:
-        _event_cache = captured
-        _save_to_firestore(captured)
-    return {"ok": True, "recording": False, "captured": len(captured), "saved": save and bool(captured)}
+        _event_sets[target] = captured
+        if target == "1":
+            _event_cache = captured  # keep alias in sync
+            _save_to_firestore(captured)
+        else:
+            _save_to_firestore(captured, doc_name=_FS_DOCUMENT_2)
+    return {"ok": True, "recording": False, "target_set": target, "captured": len(captured), "saved": save and bool(captured)}
 
 
 @app.route("/record/status")
