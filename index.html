@@ -5,7 +5,7 @@
 <title>dino-theater</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { width: 100vw; height: 20vh; min-height: 180px; overflow: hidden; background: #f8fafc; }
+html, body { width: 100vw; height: 100vh; overflow: hidden; background: #1e1e1e; font-family: 'DejaVu Sans', system-ui, sans-serif; color: #ffffff; }
 canvas { display: block; width: 100%; height: 100%; }
 </style>
 </head>
@@ -27,24 +27,47 @@ function resize() {
 // ── Stations ──────────────────────────────────────────────────────────────────
 
 const STATION_DEFS = [
-  { id:'source',  label:'Source Code',   emoji:'🛠️', color:'#4A4E69' }, // Darker Mauve/Slate
-  { id:'github',  label:'GitHub',        emoji:'📦', color:'#22223B' }, // Deep Blue-Grey
-  { id:'cbuild',  label:'Cloud Build',   emoji:'⚙️', color:'#6D597A' }, // Muted Burgundy
-  { id:'testing', label:'Testing',       emoji:'🔍', color:'#354F52' }, // Dark Sage
-  { id:'crun',    label:'Cloud Run',     emoji:'🛰️', color:'#4E3B4F' }, // Deep Muted Purple
-  { id:'cloud',   label:'Cloud General', emoji:'🌐', color:'#2F3E46' }, // Dark Forest Mist
+  { id:'source',  label:'Source Code',   emoji:'🛠️', color:'#0066ff' }, // Electric Blue
+  { id:'github',  label:'GitHub',        emoji:'📦', color:'#0044cc' }, // Deep Blue
+  { id:'cbuild',  label:'Cloud Build',   emoji:'⚙️', color:'#00ffff' }, // Neon Cyan
+  { id:'testing', label:'Testing',       emoji:'🔍', color:'#00cccc' }, // Teal Cyan
+  { id:'crun',    label:'Cloud Run',     emoji:'🛰️', color:'#3399ff' }, // Sky Blue
+  { id:'cloud',   label:'Cloud General', emoji:'🌐', color:'#66e0ff' }, // Light Cyan
 ];
 
 let stations    = {};
 let groundY     = 0;
+let centerX     = 0;
+let centerY     = 0;
+let hexRX       = 0;
+let hexRY       = 0;
 let agentsReady = false;
 
+// Pipeline cycle order — each station connects to the next
+const FLOW_ORDER = ['source','github','cbuild','testing','crun','cloud'];
+
+// Hexagonal angles (clockwise from top, in radians)
+//  top, top-right, bot-right, bottom, bot-left, top-left
+const HEX_ANGLES = [-Math.PI/2, -Math.PI/6, Math.PI/6, Math.PI/2, 5*Math.PI/6, -5*Math.PI/6];
+
 function computeLayout() {
-  groundY = H() * 0.68;
-  const pad  = Math.max(60, W() * 0.05);
-  const span = W() - pad * 2;
-  STATION_DEFS.forEach((s, i) => {
-    stations[s.id] = { ...s, x: pad + (span / (STATION_DEFS.length - 1)) * i };
+  // Reserve bottom 22% for message log
+  const reserveBottom = Math.max(110, H() * 0.22);
+  centerX = W() / 2;
+  centerY = (H() - reserveBottom) / 2 + 10;
+  hexRX   = Math.min(W() * 0.34, (W() - 220) / 2);
+  hexRY   = Math.min((H() - reserveBottom) * 0.42, hexRX * 0.78);
+  groundY = H() - reserveBottom; // Used for log particles target
+
+  FLOW_ORDER.forEach((id, i) => {
+    const def = STATION_DEFS.find(d => d.id === id);
+    const a   = HEX_ANGLES[i];
+    stations[id] = {
+      ...def,
+      x: centerX + Math.cos(a) * hexRX,
+      y: centerY + Math.sin(a) * hexRY,
+      angle: a,
+    };
   });
   if (!agentsReady) { agentsReady = true; initAgents(); }
 }
@@ -62,18 +85,21 @@ let logParticles = [];
 let logSpawnT    = 0;
 
 function spawnLog() {
-  const cx   = stations.cloud?.x ?? W() * 0.92;
+  const st   = stations.cloud;
+  const cx   = st?.x ?? W() * 0.10;
+  const cy   = st?.y ?? H() * 0.40;
   const text = LOG_POOL[Math.floor(Math.random() * LOG_POOL.length)];
-  const fromRight = Math.random() > 0.35;
+  // Logs swirl in from outside the canvas toward the cloud platform
+  const side = Math.random() > 0.5 ? -1 : 1;
   logParticles.push({
-    x:  fromRight ? W() + 8 : cx + 50 + Math.random() * W() * 0.13,
-    y:  fromRight ? groundY * (0.12 + Math.random() * 0.78) : -8,
+    x:  side > 0 ? W() + 8 : -8,
+    y:  Math.random() * (H() - reservedBottom() - 40) + 20,
     tx: cx,
-    ty: groundY * 0.28,
+    ty: cy,
     text,
     life: 100, maxLife: 100,
-    color: text.startsWith('[ERROR') ? '#B5838D'
-         : text.startsWith('[WARN')  ? '#E9C46A' : '#9A8C98',
+    color: text.startsWith('[ERROR') ? '#ff3366'
+         : text.startsWith('[WARN')  ? '#ffcc00' : '#00ffff',
   });
 }
 
@@ -92,24 +118,257 @@ function tickLogs() {
 }
 
 function drawLogs() {
-  const sz = Math.max(8, H() * 0.072);
+  const sz = Math.max(11, Math.min(18, H() * 0.018));
   ctx.font = `600 ${sz}px 'Courier New', monospace`;
   ctx.textBaseline = 'middle';
   for (const p of logParticles) {
     ctx.globalAlpha = p.alpha * 0.95;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 6;
     ctx.fillStyle   = p.color;
     ctx.textAlign   = 'right';
     ctx.fillText(p.text, p.x, p.y);
   }
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+}
+
+// ── Thruster particles (emitted by moving robots) ────────────────────────────
+
+let thrustParticles = [];
+function spawnThrust(name) {
+  const ag = A[name]; const cfg = CFG[name]; if (!ag || !cfg) return;
+  const speed = Math.hypot(ag.vx, ag.vy);
+  const dirx  = -ag.vx / (speed || 1);
+  const diry  = -ag.vy / (speed || 1);
+  const jitter = () => (Math.random() - 0.5) * 4;
+  const life = 22 + Math.random() * 10;
+  thrustParticles.push({
+    x: ag.x + dirx * 6 + jitter(),
+    y: ag.y + diry * 6 + jitter() + 8,
+    vx: dirx * (1.2 + Math.random()) + jitter() * 0.2,
+    vy: diry * (1.2 + Math.random()) + jitter() * 0.2 + 0.4,
+    life,
+    maxLife: life,
+    r: 2 + Math.random() * 2,
+    color: cfg.color,
+  });
+}
+
+function tickThrusts() {
+  thrustParticles = thrustParticles.filter(p => p.life > 0);
+  for (const p of thrustParticles) {
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.92; p.vy *= 0.92;
+    p.life--;
+  }
+}
+
+function drawThrusts() {
+  for (const p of thrustParticles) {
+    const a = Math.max(0, p.life / p.maxLife);
+    if (a <= 0) continue;
+    const r = Math.max(0.1, p.r * a);
+    ctx.globalAlpha = a * 0.7;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur  = 12;
+    ctx.fillStyle   = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+}
+
+// ── Connections + data packets ────────────────────────────────────────────────
+
+// Each connection links one station to the next in FLOW_ORDER (cyclic)
+let connectionPulse = {};   // key: stationId → frames remaining (animates incoming edge)
+let packets = [];           // {fromId, toId, t, color, life}
+
+function pulseConnection(toId) {
+  // Pulse the edge that *enters* this station (from previous in flow)
+  const i = FLOW_ORDER.indexOf(toId);
+  if (i < 0) return;
+  const fromId = FLOW_ORDER[(i - 1 + FLOW_ORDER.length) % FLOW_ORDER.length];
+  connectionPulse[`${fromId}>${toId}`] = 60;
+  spawnPacket(fromId, toId);
+}
+
+function spawnPacket(fromId, toId) {
+  const a = stations[fromId], b = stations[toId];
+  if (!a || !b) return;
+  packets.push({
+    fromId, toId,
+    t: 0,
+    color: b.color,
+    life: 110,
+  });
+}
+
+function tickPackets() {
+  packets = packets.filter(p => p.life > 0 && p.t < 1);
+  for (const p of packets) {
+    p.t += 1 / 70; // ~70 frames to traverse
+    p.life--;
+  }
+  for (const k of Object.keys(connectionPulse)) {
+    connectionPulse[k]--;
+    if (connectionPulse[k] <= 0) delete connectionPulse[k];
+  }
+}
+
+function drawConnections() {
+  for (let i = 0; i < FLOW_ORDER.length; i++) {
+    const a = stations[FLOW_ORDER[i]];
+    const b = stations[FLOW_ORDER[(i + 1) % FLOW_ORDER.length]];
+    if (!a || !b) continue;
+    const key = `${a.id}>${b.id}`;
+    const pulse = (connectionPulse[key] ?? 0) / 60;
+
+    // Curved (bezier-ish) edge biased toward the hub center for flowing feel
+    const mx = (a.x + b.x) / 2 + (centerX - (a.x + b.x) / 2) * 0.18;
+    const my = (a.y + b.y) / 2 + (centerY - (a.y + b.y) / 2) * 0.18;
+
+    ctx.strokeStyle = pulse > 0
+      ? `rgba(0, 255, 255, ${0.35 + pulse * 0.55})`
+      : 'rgba(0, 102, 255, 0.25)';
+    ctx.lineWidth = pulse > 0 ? 2.2 : 1.2;
+    ctx.shadowColor = pulse > 0 ? '#00ffff' : 'rgba(0,102,255,0.5)';
+    ctx.shadowBlur  = pulse > 0 ? 14 : 6;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.quadraticCurveTo(mx, my, b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+
+  // Center hub ring (decorative)
+  const ringR = Math.min(hexRX, hexRY) * 0.18;
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.18)';
+  ctx.lineWidth = 1;
+  ctx.shadowColor = 'rgba(0, 255, 255, 0.4)';
+  ctx.shadowBlur = 10;
+  ctx.beginPath(); ctx.arc(centerX, centerY, ringR, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(centerX, centerY, ringR * 1.6, 0, Math.PI * 2); ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+
+function drawPackets() {
+  for (const p of packets) {
+    const a = stations[p.fromId], b = stations[p.toId];
+    if (!a || !b) continue;
+    const mx = (a.x + b.x) / 2 + (centerX - (a.x + b.x) / 2) * 0.18;
+    const my = (a.y + b.y) / 2 + (centerY - (a.y + b.y) / 2) * 0.18;
+    // Quadratic bezier sample
+    const t = p.t;
+    const it = 1 - t;
+    const x = it * it * a.x + 2 * it * t * mx + t * t * b.x;
+    const y = it * it * a.y + 2 * it * t * my + t * t * b.y;
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 16;
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+    // Trailing comet
+    const tx = it * it * a.x + 2 * it * Math.max(0, t - 0.06) * mx + Math.max(0, t - 0.06) ** 2 * b.x;
+    const ty = it * it * a.y + 2 * it * Math.max(0, t - 0.06) * my + Math.max(0, t - 0.06) ** 2 * b.y;
+    ctx.globalAlpha = 0.4;
+    ctx.beginPath(); ctx.arc(tx, ty, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.shadowBlur = 0;
+}
+
+// ── A2A meeting FX (sparkles + chatter line between two agents) ──────────────
+
+let meetingFX = []; // {x, y, vx, vy, life, maxLife, color, text}
+
+function spawnMeetingSparkle(name) {
+  const ag = A[name]; const cfg = CFG[name];
+  if (!ag || !cfg || !ag.meetingPartner) return;
+  const other = A[ag.meetingPartner];
+  if (!other) return;
+  const mx = (ag.x + other.x) / 2 + (Math.random() - 0.5) * 30;
+  const my = Math.min(ag.y, other.y) - 18 - Math.random() * 20;
+  const glyphs = ['♪', '♫', '✦', '✧', '◆', '＊'];
+  meetingFX.push({
+    x: mx, y: my,
+    vx: (Math.random() - 0.5) * 0.6,
+    vy: -0.5 - Math.random() * 0.3,
+    life: 55, maxLife: 55,
+    color: cfg.color,
+    text: glyphs[Math.floor(Math.random() * glyphs.length)],
+  });
+}
+
+function tickMeetingFX() {
+  meetingFX = meetingFX.filter(p => p.life > 0);
+  for (const p of meetingFX) {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy *= 0.96;
+    p.life--;
+  }
+}
+
+function drawMeetingFX() {
+  // Wavy chatter ribbon between meeting partners
+  const drawn = new Set();
+  for (const name of ['DinoAgent', 'CIAgent', 'CDAgent']) {
+    const ag = A[name];
+    if (!ag || ag.meetingT <= 0 || !ag.meetingPartner) continue;
+    const key = [name, ag.meetingPartner].sort().join('|');
+    if (drawn.has(key)) continue;
+    drawn.add(key);
+    const other = A[ag.meetingPartner];
+    if (!other) continue;
+
+    const t  = performance.now() / 1000;
+    const dx = other.x - ag.x;
+    const dy = other.y - ag.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const px = -dy / len, py = dx / len;
+    const arcY = -28; // lift the ribbon above the heads
+
+    ctx.strokeStyle = `rgba(0, 255, 255, ${0.45 + Math.sin(t * 5) * 0.30})`;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#00ffff'; ctx.shadowBlur = 14;
+    ctx.beginPath();
+    const segs = 14;
+    for (let i = 0; i <= segs; i++) {
+      const f = i / segs;
+      const wave = Math.sin(t * 7 + f * Math.PI * 4) * 6;
+      const x = ag.x + dx * f + px * wave;
+      const y = ag.y + dy * f + py * wave + arcY * Math.sin(f * Math.PI);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // Sparkle glyphs floating up between the partners
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const p of meetingFX) {
+    const a = Math.max(0, p.life / p.maxLife);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color; ctx.shadowBlur = 8;
+    const sz = 14 + (1 - a) * 8;
+    ctx.font = `${sz}px 'DejaVu Sans', serif`;
+    ctx.fillText(p.text, p.x, p.y);
+  }
+  ctx.shadowBlur = 0;
   ctx.globalAlpha = 1;
 }
 
 // ── Agent config ──────────────────────────────────────────────────────────────
 
 const CFG = {
-  DinoAgent: { name:'Dino', color:'#354F52', shirt:'#52796F', shirtD:'#2F3E46', pants:'#1B262B', eyeColor:'#84A98C' },
-  CIAgent:   { name:'CI',   color:'#22223B', shirt:'#4A4E69', shirtD:'#1B1B2F', pants:'#0F0F1A', eyeColor:'#9A8C98' },
-  CDAgent:   { name:'CD',   color:'#4E3B4F', shirt:'#6D597A', shirtD:'#3D2C3D', pants:'#1A1A1A', eyeColor:'#B5838D' },
+  DinoAgent: { name:'Reme', color:'#0066ff', shirt:'#3385ff', shirtD:'#0044cc', pants:'#001a4d', eyeColor:'#00ffff' },
+  CIAgent:   { name:'CI',   color:'#00cccc', shirt:'#00ffff', shirtD:'#008b8b', pants:'#003333', eyeColor:'#0066ff' },
+  CDAgent:   { name:'CD',   color:'#7c3aed', shirt:'#a855f7', shirtD:'#5b21b6', pants:'#2e0a4e', eyeColor:'#00ffff' },
 };
 
 // ── Message log ───────────────────────────────────────────────────────────────
@@ -117,7 +376,7 @@ const CFG = {
 const msgLog = [];  // { agent, text, color, ts }
 
 function addLog(agent, text) {
-  const color = CFG[agent]?.color ?? '#9A8C98';
+  const color = CFG[agent]?.color ?? '#00ffff';
   const clean = text.replace(/^[\u{1F000}-\u{1FFFF}💭💬⚡🔓→✓✦⏳🚦]\s*/u, '').trim();
   msgLog.unshift({ agent, text: clean, color, ts: Date.now() });
   if (msgLog.length > 6) msgLog.length = 6;
@@ -125,42 +384,35 @@ function addLog(agent, text) {
 
 function drawMsgLog() {
   if (!msgLog.length) return;
-  const logH  = Math.max(28, H() * 0.22);
-  const pad   = 10;
+  const logH  = Math.max(80, Math.min(220, H() * 0.18));
+  const pad   = 16;
   const y0    = H() - logH - pad;
   const x0    = pad;
   const w0    = W() - pad * 2;
-  const sz    = Math.max(10, H() * 0.082);
-  const lineH = sz * 1.4;
-  const vis   = Math.min(msgLog.length, Math.floor((logH - 10) / lineH));
+  const sz    = Math.max(11, Math.min(18, H() * 0.018));
+  const lineH = sz * 1.5;
+  const vis   = Math.min(msgLog.length, Math.floor((logH - 16) / lineH));
   if (!vis) return;
 
-  // Liquid Glass panel
+  // Dark glass panel
   const glassG = ctx.createLinearGradient(x0, y0, x0 + w0, y0 + logH);
-  glassG.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
-  glassG.addColorStop(1, 'rgba(241, 245, 249, 0.7)');
+  glassG.addColorStop(0, 'rgba(20, 25, 45, 0.92)');
+  glassG.addColorStop(1, 'rgba(10, 12, 25, 0.85)');
   ctx.fillStyle = glassG;
-  
-  ctx.shadowColor = 'rgba(15, 23, 42, 0.1)';
-  ctx.shadowBlur = 15;
+
+  ctx.shadowColor = 'rgba(0, 102, 255, 0.4)';
+  ctx.shadowBlur = 24;
   rrect(x0, y0, w0, logH, 16);
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  // Reflection highlight
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(x0 + 20, y0);
-  ctx.lineTo(x0 + w0 - 20, y0);
-  ctx.stroke();
-
-  ctx.strokeStyle = 'rgba(15, 23, 42, 0.05)';
+  // Subtle outer border
+  ctx.strokeStyle = 'rgba(0, 102, 255, 0.35)';
   ctx.lineWidth = 1;
   rrect(x0, y0, w0, logH, 16);
   ctx.stroke();
 
-  ctx.font = `600 ${sz}px Inter,system-ui,sans-serif`;
+  ctx.font = `600 ${sz}px 'DejaVu Sans', system-ui, sans-serif`;
   ctx.textBaseline = 'middle';
   ctx.save();
   rrect(x0, y0, w0, logH, 16);
@@ -169,13 +421,16 @@ function drawMsgLog() {
     const m   = msgLog[i];
     const age = (Date.now() - m.ts) / 1000;
     ctx.globalAlpha = Math.max(0.4, 1 - age / 45);
-    const ty = y0 + 10 + (i + 0.5) * ((logH - 15) / vis);
+    const ty = y0 + 10 + (i + 0.5) * ((logH - 18) / vis);
     const tag = `[${m.agent.replace('Agent','')}] `;
     ctx.textAlign = 'left';
     ctx.fillStyle = m.color;
-    ctx.fillText(tag, x0 + 14, ty);
-    ctx.fillStyle = '#0f172a';
-    ctx.fillText(m.text, x0 + 14 + ctx.measureText(tag).width, ty);
+    ctx.shadowColor = m.color;
+    ctx.shadowBlur = 6;
+    ctx.fillText(tag, x0 + 18, ty);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(m.text, x0 + 18 + ctx.measureText(tag).width, ty);
   }
   ctx.restore();
   ctx.globalAlpha = 1;
@@ -184,16 +439,37 @@ function drawMsgLog() {
 const A = {};
 
 function initAgents() {
-  A.DinoAgent = mk(lerp(stations.source?.x ?? 0,  stations.github?.x  ?? 100, 0.45));
-  A.CIAgent   = mk(lerp(stations.cbuild?.x ?? 200, stations.testing?.x ?? 300, 0.5));
-  A.CDAgent   = mk(lerp(stations.crun?.x  ?? 400,  stations.cloud?.x  ?? 500, 0.45));
+  // Drop agents in roughly the upper half of the hex, roaming free
+  A.DinoAgent = mk(centerX,            centerY - hexRY * 0.45);
+  A.CIAgent   = mk(centerX + hexRX*0.5, centerY + hexRY * 0.15);
+  A.CDAgent   = mk(centerX - hexRX*0.5, centerY + hexRY * 0.15);
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 
-function mk(x) {
-  return { x, targetX:x, walkF:0, working:false, speech:'', speechT:0, returnX:x,
-           lastSeen: Date.now(), alpha: 1 };
+function mk(x, y) {
+  return {
+    x, y,
+    targetX: x, targetY: y,
+    returnX: x, returnY: y,
+    home: { x, y },
+    idleAfter: Date.now(),
+    orbitFx: 0.35 + Math.random() * 0.30,
+    orbitFy: 0.50 + Math.random() * 0.30,
+    orbitPh: Math.random() * Math.PI * 2,
+    vx: 0, vy: 0,
+    walkF: 0,
+    working: false,
+    speech: '', speechT: 0,
+    lastSeen: Date.now(),
+    alpha: 1,
+    facing: 1,
+    tilt: 0,
+    meetingT: 0,            // frames remaining of A2A meeting
+    meetingPartner: null,   // other agent's name during meeting
+    danceF: 0,              // dance-cycle phase counter
+    speechMaxT: 1,          // initial speechT — used for bubble pop-in / fade
+  };
 }
 
 // ── Station glow state ────────────────────────────────────────────────────────
@@ -211,23 +487,78 @@ function rrect(x, y, w, h, r) {
 
 // ── Background ────────────────────────────────────────────────────────────────
 
+// Pre-generated starfield for stable twinkle
+let stars = null;
+function ensureStars() {
+  if (stars && stars.W === W() && stars.H === H()) return;
+  const list = [];
+  const n = Math.floor((W() * H()) / 9000);
+  for (let i = 0; i < n; i++) {
+    list.push({
+      x: Math.random() * W(),
+      y: Math.random() * H(),
+      r: Math.random() * 1.2 + 0.3,
+      tw: Math.random() * Math.PI * 2,
+      sp: 0.01 + Math.random() * 0.025,
+    });
+  }
+  stars = { W: W(), H: H(), list };
+}
+
 function drawBg() {
-  // Morandi Background (Warm Gray/Beige)
-  const g = ctx.createLinearGradient(0, 0, 0, H());
-  g.addColorStop(0, '#F5EBE0');
-  g.addColorStop(1, '#E3D5CA');
-  ctx.fillStyle = g;
+  // Tech Innovation: dark radial gradient (deeper toward edges)
+  const rg = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, Math.max(W(), H()));
+  rg.addColorStop(0, '#1e1e1e');
+  rg.addColorStop(1, '#05060d');
+  ctx.fillStyle = rg;
   ctx.fillRect(0, 0, W(), H());
 
-  // Soft Morandi orbs
-  drawOrb(W() * 0.2, H() * 0.3, H() * 0.5, 'rgba(154, 140, 152, 0.1)');
-  drawOrb(W() * 0.8, H() * 0.6, H() * 0.4, 'rgba(201, 173, 167, 0.1)');
-  drawOrb(W() * 0.5, H() * 0.2, H() * 0.6, 'rgba(132, 169, 140, 0.1)');
+  // Drifting starfield
+  ensureStars();
+  for (const s of stars.list) {
+    s.tw += s.sp;
+    const a = 0.35 + Math.sin(s.tw) * 0.35;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#9be8ff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 
-  // Ground line
-  ctx.strokeStyle = 'rgba(74, 78, 105, 0.1)';
+  // Glowing electric blue / neon cyan orbs
+  drawOrb(W() * 0.18, H() * 0.28, H() * 0.55, 'rgba(0, 102, 255, 0.18)');
+  drawOrb(W() * 0.82, H() * 0.65, H() * 0.5,  'rgba(0, 255, 255, 0.12)');
+  drawOrb(W() * 0.5,  H() * 0.15, H() * 0.45, 'rgba(51, 153, 255, 0.10)');
+
+  // Perspective floor grid (drawn under the message log area)
+  drawPerspectiveFloor();
+}
+
+function drawPerspectiveFloor() {
+  const top    = groundY;                  // horizon
+  const bottom = H() - 6;                  // foreground
+  const vp     = { x: centerX, y: top - 40 }; // vanishing point above horizon
+  const rows   = 8;
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.18)';
   ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(W(), groundY); ctx.stroke();
+  ctx.shadowColor = 'rgba(0, 255, 255, 0.25)';
+  ctx.shadowBlur = 6;
+
+  // Horizontal lines getting denser toward horizon
+  for (let i = 0; i <= rows; i++) {
+    const t = Math.pow(i / rows, 1.6);
+    const y = top + (bottom - top) * t;
+    ctx.globalAlpha = 0.15 + t * 0.55;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W(), y); ctx.stroke();
+  }
+  ctx.globalAlpha = 0.45;
+  // Vanishing-point radial lines
+  const cols = 14;
+  for (let i = 0; i <= cols; i++) {
+    const x = (i / cols) * W();
+    ctx.beginPath(); ctx.moveTo(x, bottom); ctx.lineTo(vp.x, vp.y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
 }
 
 function drawOrb(x, y, r, color) {
@@ -240,80 +571,288 @@ function drawOrb(x, y, r, color) {
 
 // ── Station drawing ───────────────────────────────────────────────────────────
 
+// Floating hex platform
 function drawStation(s) {
   if (!s) return;
   const lit   = (litStations[s.id] ?? 0) > 0;
-  const sx    = s.x;
+  const tNow  = performance.now() / 1000;
+  const breath = lit ? (1 + Math.sin(tNow * 4) * 0.06) : 1;
+  const r      = Math.max(40, Math.min(72, Math.min(W(), H()) * 0.055)) * breath;
 
-  const bldW = Math.max(50, W() * 0.06);
-  const bldH = groundY * 0.65;
-  const bldX = sx - bldW / 2;
-  const bldY = groundY - bldH - 10; // Floating
+  // Per-station signature animation (only when lit)
+  if (lit) drawStationFX(s, r, tNow);
 
-  // Shadow/Glow
+  // Idle outer halo
+  ctx.shadowColor = lit ? s.color : 'rgba(0,102,255,0.45)';
+  ctx.shadowBlur  = lit ? 30 : 14;
+
+  // Hex platform fill
+  const grad = ctx.createRadialGradient(s.x, s.y - r * 0.3, 0, s.x, s.y, r);
   if (lit) {
-    ctx.shadowColor = s.color + '88'; // Add translucency
-    ctx.shadowBlur = 10;
+    grad.addColorStop(0, 'rgba(60, 80, 130, 0.95)');
+    grad.addColorStop(1, 'rgba(15, 18, 35, 0.85)');
   } else {
-    ctx.shadowColor = 'rgba(15, 23, 42, 0.08)';
-    ctx.shadowBlur = 6;
+    grad.addColorStop(0, 'rgba(35, 45, 80, 0.78)');
+    grad.addColorStop(1, 'rgba(10, 14, 28, 0.55)');
   }
-
-  // Liquid Glass Body
-  const glassG = ctx.createLinearGradient(bldX, bldY, bldX + bldW, bldY + bldH);
-  if (lit) {
-    glassG.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
-    glassG.addColorStop(1, 'rgba(255, 255, 255, 0.75)');
-  } else {
-    glassG.addColorStop(0, 'rgba(255, 255, 255, 0.65)');
-    glassG.addColorStop(1, 'rgba(255, 255, 255, 0.35)');
-  }
-  ctx.fillStyle = glassG;
-  ctx.strokeStyle = lit ? s.color : 'rgba(15, 23, 42, 0.1)';
-  ctx.lineWidth = lit ? 2.5 : 1.5;
-  rrect(bldX, bldY, bldW, bldH, 12);
-  ctx.fill(); ctx.stroke();
+  hexPath(s.x, s.y, r);
+  ctx.fillStyle = grad;
+  ctx.fill();
   ctx.shadowBlur = 0;
 
-  // Glossy Reflection
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-  ctx.lineWidth = 1.5;
+  // Hex outline
+  ctx.strokeStyle = lit ? s.color : 'rgba(0, 255, 255, 0.35)';
+  ctx.lineWidth = lit ? 2.5 : 1.5;
+  hexPath(s.x, s.y, r);
+  ctx.stroke();
+
+  // Inner faint hex
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+  ctx.lineWidth = 0.6;
+  hexPath(s.x, s.y, r * 0.78);
+  ctx.stroke();
+
+  // Top arc highlight
+  ctx.strokeStyle = lit ? 'rgba(0, 255, 255, 0.85)' : 'rgba(0, 255, 255, 0.35)';
+  ctx.lineWidth = 1.4;
   ctx.beginPath();
-  ctx.moveTo(bldX + 8, bldY + 2);
-  ctx.lineTo(bldX + bldW - 8, bldY + 2);
+  ctx.arc(s.x, s.y, r * 0.92, Math.PI * 1.1, Math.PI * 1.9);
   ctx.stroke();
-
-  // Polished Edge
-  ctx.strokeStyle = 'rgba(15, 23, 42, 0.03)';
-  ctx.lineWidth = 0.5;
-  rrect(bldX + 1, bldY + 1, bldW - 2, bldH - 2, 11);
-  ctx.stroke();
-
-  // Top accent bar (Polished)
-  ctx.fillStyle = lit ? s.color : 'rgba(15, 23, 42, 0.08)';
-  rrect(bldX, bldY, bldW, bldH * 0.12, 12);
-  ctx.fill();
-  ctx.fillRect(bldX, bldY + 6, bldW, bldH * 0.04); 
 
   // Emoji icon
-  const iconSz = Math.max(20, bldH * 0.38);
+  const iconSz = Math.max(22, r * 0.7);
   ctx.font = `${iconSz}px serif`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(s.emoji, sx, bldY + bldH * 0.50);
+  ctx.fillText(s.emoji, s.x, s.y - r * 0.05);
 
-  // Label
-  const lblSz = Math.max(8.5, bldH * 0.14);
-  ctx.font = `600 ${lblSz}px Inter,system-ui,sans-serif`;
-  ctx.fillStyle    = lit ? s.color : '#64748b';
+  // Label below platform
+  const lblSz = Math.max(11, Math.min(18, r * 0.28));
+  ctx.font = `700 ${lblSz}px 'DejaVu Sans', system-ui, sans-serif`;
+  ctx.fillStyle    = lit ? s.color : '#cbd5ff';
   ctx.textAlign    = 'center';
-  ctx.textBaseline = 'bottom';
-  ctx.fillText(s.label, sx, bldY + bldH - 6);
+  ctx.textBaseline = 'top';
+  ctx.shadowColor = lit ? s.color : 'transparent';
+  ctx.shadowBlur = lit ? 10 : 0;
+  ctx.fillText(s.label, s.x, s.y + r + 8);
+  ctx.shadowBlur = 0;
+}
+
+function hexPath(cx, cy, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 3;
+    const px = cx + Math.cos(a) * r;
+    const py = cy + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+// ── Per-station signature animations ──────────────────────────────────────────
+
+function drawStationFX(s, r, t) {
+  switch (s.id) {
+    case 'source':  return fxSource(s, r, t);
+    case 'github':  return fxGithub(s, r, t);
+    case 'cbuild':  return fxCbuild(s, r, t);
+    case 'testing': return fxTesting(s, r, t);
+    case 'crun':    return fxCrun(s, r, t);
+    case 'cloud':   return fxCloud(s, r, t);
+  }
+}
+
+// Source Code: scrolling code lines stacked above the platform
+function fxSource(s, r, t) {
+  ctx.save();
+  ctx.shadowColor = s.color; ctx.shadowBlur = 8;
+  ctx.strokeStyle = s.color; ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  const slot = r * 1.55;
+  for (let i = 0; i < 5; i++) {
+    const off = ((t * 18) + i * 9) % 45 - 22;
+    const lw  = (i % 2 === 0 ? 0.75 : 0.50) * r;
+    const a   = 1 - Math.abs(off) / 22;
+    if (a <= 0) continue;
+    ctx.globalAlpha = a * 0.85;
+    const y = s.y - slot + off;
+    ctx.beginPath();
+    ctx.moveTo(s.x - lw / 2 + (i % 2) * 6, y);
+    ctx.lineTo(s.x + lw / 2 + (i % 2) * 6, y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+// GitHub: branching dots radiating outward and pulsing back
+function fxGithub(s, r, t) {
+  ctx.save();
+  const branches = 6;
+  for (let i = 0; i < branches; i++) {
+    const baseA = (i / branches) * Math.PI * 2;
+    const a     = baseA + Math.sin(t * 0.5 + i) * 0.15;
+    const pulse = (t * 0.6 + i / branches) % 1;
+    const dist  = r * (1.15 + pulse * 0.55);
+    const x = s.x + Math.cos(a) * dist;
+    const y = s.y + Math.sin(a) * dist;
+    // Connecting hairline
+    ctx.strokeStyle = s.color + '55';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(s.x + Math.cos(a) * r, s.y + Math.sin(a) * r);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    // Travelling node
+    ctx.fillStyle = s.color;
+    ctx.shadowColor = s.color; ctx.shadowBlur = 10;
+    ctx.globalAlpha = 1 - pulse * 0.3;
+    ctx.beginPath();
+    ctx.arc(x, y, 3 - pulse * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+// Cloud Build: spinning gear above the platform plus orange sparks
+function fxCbuild(s, r, t) {
+  ctx.save();
+  const gx = s.x, gy = s.y - r * 1.55;
+  ctx.translate(gx, gy);
+  ctx.rotate(t * 1.6);
+  const gR = r * 0.30;
+  const teeth = 8;
+  ctx.fillStyle = s.color;
+  ctx.strokeStyle = s.color;
+  ctx.shadowColor = s.color; ctx.shadowBlur = 10;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < teeth * 2; i++) {
+    const a  = (i / (teeth * 2)) * Math.PI * 2;
+    const tr = (i % 2 === 0) ? gR * 1.30 : gR;
+    const x  = Math.cos(a) * tr;
+    const y  = Math.sin(a) * tr;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+  // Hub hole
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.beginPath(); ctx.arc(0, 0, gR * 0.42, 0, Math.PI * 2); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.shadowBlur = 0;
+  ctx.restore();
+
+  // Sparks shooting off
+  for (let i = 0; i < 4; i++) {
+    const ph = (t * 1.8 + i * 0.35) % 1;
+    const ang = (i / 4) * Math.PI * 2 + t * 0.4;
+    const sx = gx + Math.cos(ang) * (10 + ph * r * 0.7);
+    const sy = gy + Math.sin(ang) * (10 + ph * r * 0.7);
+    ctx.fillStyle = '#ffaa00';
+    ctx.shadowColor = '#ffaa00'; ctx.shadowBlur = 8;
+    ctx.globalAlpha = 1 - ph;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 2 - ph * 1.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+}
+
+// Testing: rotating radar sweep + expanding ping ring
+function fxTesting(s, r, t) {
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  // Sweep beam (triangle)
+  const a = (t * 1.8) % (Math.PI * 2);
+  const beamW = Math.PI / 5;
+  ctx.fillStyle = s.color + '40';
+  ctx.shadowColor = s.color; ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, r * 1.55, a - beamW / 2, a + beamW / 2);
+  ctx.closePath();
+  ctx.fill();
+  // Sweep edge
+  ctx.strokeStyle = s.color;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(Math.cos(a) * r * 1.55, Math.sin(a) * r * 1.55);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Expanding ping
+  const ping = (t * 0.85) % 1;
+  ctx.strokeStyle = s.color;
+  ctx.globalAlpha = 1 - ping;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(0, 0, r * (1 + ping * 0.7), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// Cloud Run: orbiting satellites on tilted ellipses
+function fxCrun(s, r, t) {
+  ctx.save();
+  const orbits = 3;
+  // Orbit guide ellipses
+  for (let i = 0; i < orbits; i++) {
+    const ringR = r * (1.25 + i * 0.20);
+    ctx.strokeStyle = s.color + '30';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(s.x, s.y, ringR, ringR * 0.45, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // Satellites
+  for (let i = 0; i < orbits; i++) {
+    const ringR = r * (1.25 + i * 0.20);
+    const a = t * (1.0 + i * 0.45) + i * 1.7;
+    const x = s.x + Math.cos(a) * ringR;
+    const y = s.y + Math.sin(a) * ringR * 0.45;
+    ctx.fillStyle = s.color;
+    ctx.shadowColor = s.color; ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+// Cloud General: data droplets falling around the platform in a gentle vortex
+function fxCloud(s, r, t) {
+  ctx.save();
+  const drops = 7;
+  for (let i = 0; i < drops; i++) {
+    const ph = (t * 0.55 + i / drops) % 1;
+    const ang = (i / drops) * Math.PI * 2 + t * 0.25;
+    const dist = r * (1.10 + ph * 0.85);
+    const x = s.x + Math.cos(ang) * dist;
+    const y = s.y + Math.sin(ang) * dist;
+    ctx.fillStyle = s.color;
+    ctx.shadowColor = s.color; ctx.shadowBlur = 8;
+    ctx.globalAlpha = (1 - ph) * 0.85;
+    ctx.beginPath();
+    ctx.arc(x, y, 2.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+  ctx.restore();
 }
 
 // ── Robot character drawing ───────────────────────────────────────────────────
 
 // ── Robot character drawing ───────────────────────────────────────────────────
 
+// Hover-bot — rounded chassis, glowing visor eye, antenna LED
 function drawRobot(name) {
   const ag  = A[name];
   const cfg = CFG[name];
@@ -322,148 +861,231 @@ function drawRobot(name) {
   const alpha = ag.alpha ?? 1;
   if (alpha <= 0) return;
 
-  const x    = ag.x;
-  const h    = Math.min(66, H() * 0.42);
-  const y    = groundY;
+  const h       = Math.max(50, Math.min(110, H() * 0.12));
+  const moving  = Math.hypot(ag.vx, ag.vy) > 0.4;
+  const phs     = ag.walkF;
+  const meeting = ag.meetingT > 0;
+  const dPhs    = ag.danceF;
+  const active  = (ag.speech && ag.speechT > 0) || ag.working || meeting;
+  const dir     = ag.facing;
+  // Dancing: amplified bob and arm wave; talking: gentle nod
+  const bob     = Math.sin(phs * 0.10) * 2.5
+                + (meeting ? Math.abs(Math.sin(dPhs * 0.30)) * 6 : 0);
+  const armSwing = meeting
+    ? Math.sin(dPhs * 0.32) * h * 0.14
+    : (moving ? Math.sin(phs * 0.22) : Math.sin(phs * 0.10)) * h * 0.04;
+  const danceTilt = meeting ? Math.sin(dPhs * 0.26) * 0.18 : 0;
 
   // Proportions
-  const bH    = h * 0.35;
-  const bW    = h * 0.40;
-  const hdW   = h * 0.36;
-  const hdH   = h * 0.28;
-  const bob   = Math.sin(ag.walkF * 0.1) * 3; // Hover bobbing
-  const bY    = y - h * 0.15 - bH + bob;
-  const hdY   = bY - hdH - h * 0.02;
-
-  const moving  = Math.abs(ag.targetX - ag.x) > 2;
-  const phs     = ag.walkF;
-  const armSw   = moving  ? -Math.sin(phs * 0.22) * 0.48
-                : ag.working ? Math.sin(phs * 0.16) * 0.36 : 0;
-
-  const active  = (ag.speech && ag.speechT > 0) || ag.working;
-  const dir     = (ag.targetX >= ag.x) ? 1 : -1;
+  const hdW = h * 0.46;
+  const hdH = h * 0.38;
+  const hdY = -h * 0.18;
+  const bW  = h * 0.34;
+  const bH  = h * 0.30;
+  const bY  = h * 0.16;
+  const armW = h * 0.07;
+  const armH = h * 0.20;
 
   ctx.save();
   ctx.globalAlpha = alpha;
+  ctx.translate(ag.x, ag.y + bob);
 
-  // Ground shadow (pulsing with bob)
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.06)';
-  const shadR = h * 0.22 - bob * 0.2;
-  ctx.beginPath(); ctx.ellipse(x, y + 1, shadR, h * 0.06, 0, 0, Math.PI * 2); ctx.fill();
+  // Hover-pad glow
+  const padR  = h * 0.42;
+  const padCY = bY + bH * 0.65;
+  const padG  = ctx.createRadialGradient(0, padCY, 0, 0, padCY, padR);
+  padG.addColorStop(0, cfg.color + 'aa');
+  padG.addColorStop(1, 'transparent');
+  ctx.fillStyle = padG;
+  ctx.beginPath();
+  ctx.ellipse(0, padCY, padR, padR * 0.30, 0, 0, Math.PI * 2);
+  ctx.fill();
 
-  // Hover Glow (underneath)
-  const hoverCol = cfg.color;
-  ctx.shadowColor = hoverCol + 'aa'; // Translucent glow
-  ctx.shadowBlur = 8 + bob * 0.5;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-  rrect(x - bW * 0.3, bY + bH - 2, bW * 0.6, 3, 2);
+  // Hover thruster slab
+  ctx.shadowColor = cfg.color; ctx.shadowBlur = 14;
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = alpha * 0.7;
+  rrect(-bW * 0.55, bY + bH * 0.5, bW * 1.1, 3, 1.5);
+  ctx.fill();
+  ctx.globalAlpha = alpha;
+  ctx.shadowBlur = 0;
+
+  // Subtle lean + dance tilt + facing
+  ctx.rotate(ag.tilt * 0.4 + danceTilt);
+  ctx.scale(dir, 1);
+
+  ctx.strokeStyle = cfg.color;
+  ctx.lineWidth = 1.5;
+
+  // === Arms (drawn before body so they sit behind / beside) ===
+  ctx.fillStyle = cfg.color;
+  // When meeting, arms wave above shoulders; otherwise gentle swing
+  const backArmY  = bY - bH * 0.25 + (meeting ? -Math.abs(armSwing) : armSwing * 0.6);
+  const frontArmY = bY - bH * 0.25 + (meeting ? -Math.abs(armSwing) * 0.8 : -armSwing);
+  rrect(-bW / 2 - armW * 0.7, backArmY, armW, armH, 3);
+  ctx.fill(); ctx.stroke();
+  rrect(bW / 2 - armW * 0.3, frontArmY, armW, armH, 3);
+  ctx.fill(); ctx.stroke();
+
+  // === Body chassis ===
+  ctx.fillStyle = cfg.shirt;
+  ctx.shadowColor = cfg.color; ctx.shadowBlur = 12;
+  rrect(-bW / 2, bY - bH / 2, bW, bH, 7);
+  ctx.fill(); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Body shoulder accent panel
+  ctx.fillStyle = cfg.color;
+  rrect(-bW * 0.42, bY - bH * 0.42, bW * 0.84, bH * 0.14, 4);
+  ctx.fill();
+
+  // Chest reactor
+  if (active) { ctx.shadowColor = '#00ffff'; ctx.shadowBlur = 14; }
+  ctx.fillStyle = active ? '#00ffff' : '#0099cc';
+  ctx.beginPath();
+  ctx.arc(0, bY + bH * 0.05, h * 0.045, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = active ? '#00ffff' : 'rgba(0,255,255,0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, bY + bH * 0.05, h * 0.075, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // === Head chassis ===
+  ctx.fillStyle = cfg.shirt;
+  ctx.strokeStyle = cfg.color; ctx.lineWidth = 1.5;
+  ctx.shadowColor = cfg.color; ctx.shadowBlur = 12;
+  rrect(-hdW / 2, hdY - hdH / 2, hdW, hdH, 9);
+  ctx.fill(); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Top crown panel
+  ctx.fillStyle = cfg.color;
+  rrect(-hdW * 0.40, hdY - hdH / 2 + 2, hdW * 0.80, hdH * 0.13, 4);
+  ctx.fill();
+
+  // === Visor (dark glass band across the head) ===
+  const visY = hdY - hdH * 0.04;
+  const visH = hdH * 0.34;
+  const visX = -hdW * 0.44;
+  const visW = hdW * 0.88;
+  const visG = ctx.createLinearGradient(visX, visY, visX, visY + visH);
+  visG.addColorStop(0, '#000814');
+  visG.addColorStop(1, '#0a0f1f');
+  ctx.fillStyle = visG;
+  rrect(visX, visY, visW, visH, 5);
+  ctx.fill();
+  ctx.strokeStyle = cfg.color; ctx.lineWidth = 1;
+  rrect(visX, visY, visW, visH, 5);
+  ctx.stroke();
+  // Top highlight on visor
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.55)';
+  ctx.beginPath();
+  ctx.moveTo(visX + 4, visY + 1.5);
+  ctx.lineTo(visX + visW - 4, visY + 1.5);
+  ctx.stroke();
+
+  // Eye dot inside visor — forward-facing (positive x is forward post-scale)
+  const eyeR = h * 0.045;
+  ctx.fillStyle = cfg.eyeColor;
+  ctx.shadowColor = cfg.eyeColor; ctx.shadowBlur = active ? 14 : 6;
+  ctx.beginPath();
+  ctx.arc(hdW * 0.20, visY + visH * 0.50, eyeR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  // Pupil highlight
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(hdW * 0.20 - eyeR * 0.25, visY + visH * 0.50 - eyeR * 0.25, eyeR * 0.30, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Cheek vent (cyan slits on back-side cheek)
+  ctx.fillStyle = active ? '#00ffff' : '#0099cc';
+  ctx.shadowColor = '#00ffff'; ctx.shadowBlur = active ? 8 : 3;
+  for (let i = 0; i < 2; i++) {
+    rrect(-hdW * 0.42, visY + visH + 3 + i * 4, h * 0.05, 2, 1);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+
+  // === Antenna ===
+  ctx.strokeStyle = '#475569';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, hdY - hdH / 2);
+  ctx.lineTo(0, hdY - hdH / 2 - h * 0.13);
+  ctx.stroke();
+  ctx.fillStyle = active ? '#00ffff' : '#0099cc';
+  ctx.shadowColor = '#00ffff'; ctx.shadowBlur = active ? 12 : 5;
+  ctx.beginPath();
+  ctx.arc(0, hdY - hdH / 2 - h * 0.13, h * 0.032, 0, Math.PI * 2);
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  // Body (Angular Robot Chassis)
-  ctx.fillStyle = cfg.shirt;
-  ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 1.5;
-  rrect(x - bW / 2, bY, bW, bH, 4);
-  ctx.fill(); ctx.stroke();
+  ctx.restore();
 
-  // Back Plates (Mechanical spikes)
-  ctx.fillStyle = cfg.shirtD;
-  for (let i = 0; i < 3; i++) {
-    const px = x - bW * 0.25 + i * bW * 0.25;
-    const py = bY;
-    ctx.beginPath();
-    ctx.moveTo(px - 5, py);
-    ctx.lineTo(px, py - 8);
-    ctx.lineTo(px + 5, py);
-    ctx.fill();
-  }
-
-  // Chest Reactor
-  const chestCol = active ? '#fbbf24' : cfg.shirtD;
-  if (active) { ctx.shadowColor = 'rgba(251, 191, 36, 0.6)'; ctx.shadowBlur = 10; }
-  ctx.fillStyle = chestCol;
-  ctx.beginPath(); ctx.arc(x + dir * 6, bY + bH * 0.45, h * 0.05, 0, Math.PI * 2); ctx.fill();
+  // Name tag (world space, unrotated)
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const nSz = Math.max(11, Math.min(18, h * 0.18));
+  const nameY = ag.y + bob + hdY - hdH / 2 - h * 0.18;
+  ctx.font = `900 ${nSz}px 'DejaVu Sans', system-ui, sans-serif`;
+  ctx.fillStyle = cfg.color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.shadowColor = cfg.color; ctx.shadowBlur = 10;
+  ctx.fillText(cfg.name, ag.x, nameY);
   ctx.shadowBlur = 0;
 
-  // Arms (Jointed)
-  ctx.strokeStyle = cfg.shirt; ctx.lineWidth = h * 0.09; ctx.lineCap = 'butt';
-  const aL = h * 0.28;
-  const aY = bY + bH * 0.2;
-  [[-1, armSw + 0.45], [1, -armSw + 0.45]].forEach(([side, angle]) => {
-    ctx.beginPath();
-    ctx.moveTo(x + side * bW * 0.52, aY);
-    ctx.lineTo(x + side * bW * 0.52 + side * Math.sin(angle) * aL,
-               aY + Math.cos(angle) * aL);
-    ctx.stroke();
-    // Hand/Tool
-    ctx.fillStyle = cfg.shirtD;
-    ctx.fillRect(x + side * bW * 0.52 + side * Math.sin(angle) * aL - 3,
-                 aY + Math.cos(angle) * aL - 3, 6, 6);
-  });
-
-  // Head (Blocky Unit)
-  ctx.fillStyle = cfg.color;
-  rrect(x - hdW / 2, hdY, hdW, hdH, 4);
-  ctx.fill(); ctx.stroke();
-  
-  // Snout (Mechanical Scanner)
-  ctx.fillStyle = cfg.color;
-  const snW = hdW * 0.45;
-  const snH = hdH * 0.55;
-  const snX = x + (dir > 0 ? hdW / 2 - 2 : -hdW / 2 - snW + 2);
-  rrect(snX, hdY + hdH * 0.35, snW, snH, 2);
-  ctx.fill(); ctx.stroke();
-
-  // Antenna
-  const antY = hdY - h * 0.12;
-  ctx.strokeStyle = '#475569'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(x, hdY); ctx.lineTo(x, antY + h * 0.03); ctx.stroke();
-  ctx.fillStyle = active ? '#fde047' : '#f59e0b';
-  ctx.shadowColor = 'rgba(245, 158, 11, 0.6)'; ctx.shadowBlur = active ? 8 : 3;
-  ctx.beginPath(); ctx.arc(x, antY, h * 0.035, 0, Math.PI * 2); ctx.fill();
-  ctx.shadowBlur = 0;
-
-  // LED Eyes (Rectangular)
-  const eyeCol = cfg.eyeColor;
-  const eW = h * 0.08;
-  const eH = h * 0.04;
-  [-.25, .25].forEach(d => {
-    const ex = x + d * hdW + (dir * 4) - eW/2;
-    const ey = hdY + hdH * 0.35;
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(ex, ey, eW, eH);
-    ctx.fillStyle = eyeCol;
-    ctx.shadowColor = eyeCol + '88'; ctx.shadowBlur = active ? 8 : 4;
-    ctx.fillRect(ex + 1, ey + 1, eW - 2, eH - 2);
-    ctx.shadowBlur = 0;
-  });
-
-  // Name tag
-  const nSz = Math.max(14, h * 0.22);
-  ctx.font = `900 ${nSz}px Inter,system-ui,sans-serif`;
-  ctx.fillStyle = cfg.color; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-  ctx.fillText(cfg.name, x, antY - h * 0.025);
-
-  // Speech bubble
   if (ag.speech && ag.speechT > 0) {
-    drawBubble(x, antY - h * 0.025 - nSz - 2, ag.speech, cfg.color);
-  }
+    const maxT = ag.speechMaxT || 1;
+    const age  = maxT - ag.speechT;             // frames since bubble appeared
+    const remain = ag.speechT;                  // frames until expiry
 
+    // Pop-in scale with overshoot (easeOutBack) over first 16 frames
+    let scale = 1;
+    if (age < 16) {
+      const t  = age / 16;
+      const c1 = 1.70158;
+      const c3 = c1 + 1;
+      scale = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+      scale = Math.max(0.05, scale);
+    }
+    // Fade-out scale in the last 14 frames before expiry
+    if (remain < 14) scale *= remain / 14;
+
+    // Damped vertical wiggle for the first ~22 frames
+    let bobY = 0;
+    if (age < 22) {
+      const t = age / 22;
+      bobY = Math.sin(t * Math.PI * 2) * 5 * (1 - t);
+    }
+
+    // Bright neon edge for the first ~28 frames
+    const fresh = Math.max(0, 1 - age / 28);
+
+    drawBubble(ag.x, nameY - nSz - 2 + bobY, ag.speech, cfg.color, { scale, fresh });
+  }
   ctx.restore();
 }
 
-function drawBubble(cx, tipY, text, color) {
+function drawBubble(cx, tipY, text, color, opts = {}) {
+  const scale = opts.scale ?? 1;
+  const fresh = opts.fresh ?? 0;   // 0..1 — extra glow on fresh bubbles
+  if (scale <= 0.02) return;
+
   // Detect A2A prefix for large badge rendering
   let badge = '';
   let mainText = text;
   if (text.startsWith('A2A ')) { badge = 'A2A'; mainText = text.slice(4); }
 
-  const sz      = Math.max(11, H() * 0.088);
+  const sz      = Math.max(12, Math.min(20, H() * 0.022));
   const badgeSz = sz * 1.8;
-  const maxW    = Math.min(W() * 0.38, 420);
-  const pad     = 11;
-  const lineH   = sz * 1.38;
-  ctx.font      = `600 ${sz}px Inter,system-ui,sans-serif`;
+  const maxW    = Math.min(W() * 0.32, 420);
+  const pad     = 12;
+  const lineH   = sz * 1.4;
+  ctx.font      = `600 ${sz}px 'DejaVu Sans', system-ui, sans-serif`;
 
   const words = mainText.split(' ');
   const lines = [];
@@ -481,10 +1103,10 @@ function drawBubble(cx, tipY, text, color) {
   // Measure badge width
   let badgeW = 0, badgeH = 0;
   if (badge) {
-    ctx.font = `900 ${badgeSz}px Inter,system-ui,sans-serif`;
+    ctx.font = `900 ${badgeSz}px 'DejaVu Sans', system-ui, sans-serif`;
     badgeW = ctx.measureText(badge).width;
     badgeH = badgeSz * 1.25;
-    ctx.font = `600 ${sz}px Inter,system-ui,sans-serif`;
+    ctx.font = `600 ${sz}px 'DejaVu Sans', system-ui, sans-serif`;
   }
 
   const innerW = Math.max(badgeW, ...lines.map(l => ctx.measureText(l).width));
@@ -494,14 +1116,39 @@ function drawBubble(cx, tipY, text, color) {
   const bx = Math.max(4, Math.min(W() - bw - 4, cx - bw / 2));
   const by = Math.max(4, tipY - bh - 8);
 
-  // High contrast bubble
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
-  ctx.strokeStyle = color; ctx.lineWidth = 1.5;
-  rrect(bx, by, bw, bh, 8); ctx.fill(); ctx.stroke();
+  // Apply pop-in scale anchored at the tip so bubble grows out of the agent
+  ctx.save();
+  if (scale !== 1) {
+    ctx.translate(cx, tipY);
+    ctx.scale(scale, scale);
+    ctx.translate(-cx, -tipY);
+  }
+
+  // Outer freshness glow ring — pulses brightly for the first ~0.5s
+  if (fresh > 0) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur  = 18 + fresh * 32;
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = fresh * 0.85;
+    ctx.lineWidth   = 2 + fresh * 2;
+    rrect(bx - 2, by - 2, bw + 4, bh + 4, 12);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+  }
+
+  // Dark glass bubble with neon edge
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 16 + fresh * 16;
+  ctx.fillStyle = 'rgba(20, 25, 45, 0.94)';
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5 + fresh * 1.2;
+  rrect(bx, by, bw, bh, 10); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.stroke();
 
   // Tail
   const tx = Math.max(bx + 9, Math.min(bx + bw - 9, cx));
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
+  ctx.fillStyle = 'rgba(20, 25, 45, 0.94)';
   ctx.beginPath(); ctx.moveTo(tx - 5, tipY); ctx.lineTo(tx + 5, tipY); ctx.lineTo(tx, by + bh + 1); ctx.closePath(); ctx.fill();
   ctx.strokeStyle = color; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(tx - 4, tipY - 1); ctx.lineTo(tx, by + bh + 1); ctx.lineTo(tx + 4, tipY - 1); ctx.stroke();
@@ -509,19 +1156,23 @@ function drawBubble(cx, tipY, text, color) {
   // Large A2A badge
   let textOffsetY = 0;
   if (badge) {
-    ctx.font = `900 ${badgeSz}px Inter,system-ui,sans-serif`;
+    ctx.font = `900 ${badgeSz}px 'DejaVu Sans', system-ui, sans-serif`;
     ctx.fillStyle = color;
+    ctx.shadowColor = color; ctx.shadowBlur = 10;
     ctx.textBaseline = 'top'; ctx.textAlign = 'left';
     ctx.fillText(badge, bx + pad, by + pad * 0.6);
+    ctx.shadowBlur = 0;
     textOffsetY = badgeH;
   }
 
   // Main text
-  ctx.font = `600 ${sz}px Inter,system-ui,sans-serif`;
-  ctx.fillStyle = '#0f172a'; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  ctx.font = `600 ${sz}px 'DejaVu Sans', system-ui, sans-serif`;
+  ctx.fillStyle = '#ffffff'; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
   lines.forEach((line, i) => {
     ctx.fillText(line, bx + pad, by + pad * 0.6 + textOffsetY + i * lineH);
   });
+
+  ctx.restore();
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -537,6 +1188,19 @@ function tick() {
     if (litStations[id] <= 0) delete litStations[id];
   }
 
+  // Connections sit behind stations; packets sit on top
+  drawConnections();
+  tickPackets();
+  drawPackets();
+
+  // Thruster particles behind robots
+  tickThrusts();
+  drawThrusts();
+
+  // A2A meeting effects (chatter ribbon + sparkles, drawn under robots)
+  tickMeetingFX();
+  drawMeetingFX();
+
   STATION_DEFS.forEach(s => drawStation(stations[s.id]));
 
   const now = Date.now();
@@ -547,19 +1211,59 @@ function tick() {
     const idle = (now - ag.lastSeen) / 1000;
     ag.alpha = idle > 33 ? 0 : idle > 30 ? 1 - (idle - 30) / 3 : 1;
 
-    ag.targetX = Math.max(30, Math.min(W() - 30, ag.targetX));
+    // Meeting state: face partner and emit sparkles
+    if (ag.meetingT > 0) {
+      ag.meetingT--;
+      ag.danceF += 1;
+      const other = A[ag.meetingPartner];
+      if (other) {
+        ag.facing = other.x >= ag.x ? 1 : -1;
+      }
+      if (Math.random() < 0.18) spawnMeetingSparkle(name);
+      if (ag.meetingT <= 0) ag.meetingPartner = null;
+    } else if (ag.danceF !== 0) {
+      ag.danceF = 0;
+    }
+
+    // Idle wander: smoothly drift around home in a Lissajous orbit
+    if (now > ag.idleAfter && ag.meetingT <= 0) {
+      const t = now / 1000;
+      const r = Math.min(hexRX, hexRY) * 0.20;
+      ag.targetX = ag.home.x + Math.cos(t * ag.orbitFx + ag.orbitPh) * r;
+      ag.targetY = ag.home.y + Math.sin(t * ag.orbitFy + ag.orbitPh) * r * 0.65;
+      ag.lastSeen = now; // wandering counts as alive — don't fade out
+    }
+
+    ag.targetX = Math.max(40, Math.min(W() - 40, ag.targetX));
+    ag.targetY = Math.max(40, Math.min(H() - reservedBottom() - 40, ag.targetY));
     const dx = ag.targetX - ag.x;
-    if (Math.abs(dx) > 1.5) {
-      ag.x      += dx * 0.082;
+    const dy = ag.targetY - ag.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 2) {
+      // Eased acceleration toward target
+      const k = 0.085;
+      ag.vx = ag.vx * 0.78 + dx * k;
+      ag.vy = ag.vy * 0.78 + dy * k;
+      ag.x += ag.vx;
+      ag.y += ag.vy;
       ag.walkF  += 1;
       ag.working = false;
     } else {
-      ag.x       = ag.targetX;
+      ag.x = ag.targetX;
+      ag.y = ag.targetY;
+      ag.vx *= 0.7; ag.vy *= 0.7;
       ag.working = true;
       ag.walkF  += 0.4;
     }
-    ag.x = Math.max(30, Math.min(W() - 30, ag.x));
+    // Smooth body tilt from velocity (lean into motion)
+    const targetTilt = Math.max(-0.25, Math.min(0.25, ag.vx * 0.05));
+    ag.tilt = ag.tilt * 0.85 + targetTilt * 0.15;
+    if (Math.abs(ag.vx) > 0.4) ag.facing = ag.vx > 0 ? 1 : -1;
     if (ag.speechT > 0) ag.speechT--; else ag.speech = '';
+
+    // Spawn thruster particles when moving fast
+    if (Math.hypot(ag.vx, ag.vy) > 0.6) spawnThrust(name);
+
     drawRobot(name);
   }
 
@@ -567,39 +1271,67 @@ function tick() {
   requestAnimationFrame(tick);
 }
 
+function reservedBottom() { return Math.max(110, H() * 0.22); }
+
 // ── Event helpers ─────────────────────────────────────────────────────────────
 
 function goTo(name, stationId, speech, frames = 480) {
   const st = stations[stationId];
   if (!st || !A[name]) return;
-  A[name].targetX  = st.x;
+  // Park robot just inward of the platform (toward hub center) so it doesn't overlap
+  const dx = centerX - st.x, dy = centerY - st.y;
+  const d  = Math.hypot(dx, dy) || 1;
+  const off = Math.max(40, hexRX * 0.16);
+  A[name].targetX  = st.x + (dx / d) * off;
+  A[name].targetY  = st.y + (dy / d) * off;
   A[name].lastSeen = Date.now();
+  A[name].idleAfter = Date.now() + 6500; // pause wandering while visiting
+  pulseConnection(stationId);
   if (speech) say(name, speech);
   lightStation(stationId, frames);
 }
 
 function say(name, text, ms = 6000) {
   if (!A[name]) return;
-  A[name].speech   = text;
-  A[name].speechT  = ms / (1000 / 60);
-  A[name].lastSeen = Date.now();
+  const frames = ms / (1000 / 60);
+  A[name].speech     = text;
+  A[name].speechT    = frames;
+  A[name].speechMaxT = frames;   // baseline for pop-in / fade-out
+  A[name].lastSeen   = Date.now();
   addLog(name, text);
 }
 
 function stationOf(text) {
-  const t = text.toLowerCase();
-  // Source: writing / editing code + CD final report
-  if (/writing branch|paginat|fix:|edit file|patch code|writing code|write code|writing a fix|add.*limit|cd report/.test(t)) return 'source';
-  // Cloud Build: image building, artifact registry
-  if (/cloud build|docker|artifact|registry|image push|build success/.test(t))             return 'cbuild';
-  // Testing: test runs
-  if (/pytest|\/42 passed|\d+ test|lint|test suite/.test(t))                               return 'testing';
-  // Cloud Run: deploys and traffic
-  if (/deploy|revision.*deploy|traffic|canary|pre.scal|cloud run|spa asset|promote/.test(t)) return 'crun';
-  // Cloud General: error investigation, monitoring, memory, GCP
-  if (/monitor|error rate|latency|p95|metric|oom|log|heap|crash|risk|resolve gcp|pulling cloud|root cause|memory/.test(t)) return 'cloud';
-  // GitHub: everything else code-collaboration
-  if (/github|pr |pull request|branch|commit|push|release|classify|scope|security scan|secret|report|summary/.test(t)) return 'github';
+  const t = (text || '').toLowerCase();
+
+  // 1) Cloud General — monitoring, analysis, GCP project setup, root cause
+  if (/^monitor \d|monitor \d\/\d|error rate|\bp95\b|latency \d|metrics? healthy|root cause|pulling .*log|risk score|cloud monitoring|resolve gcp/.test(t))
+    return 'cloud';
+
+  // 2) Cloud Run — canary, revision, traffic, SPA, "live at 100%", forwarding for deploy
+  if (/canary|revision .*deployed|deployed \(\d|spa asset|pre.?scal|cloud run|live at \d|forwarding .*(deploy|canary)|promote to|\d+%\s*traffic/.test(t))
+    return 'crun';
+
+  // 3) Cloud Build — Docker, image build, artifact registry, sha256
+  if (/cloud build|docker|artifact registry|image push|building .*image|sha256/.test(t))
+    return 'cbuild';
+
+  // 4) Testing — pytest, lint, "42/42 passed", "N tests"
+  if (/pytest|\d+\/\d+ passed|\b\d+ tests?\b|test suite|lint pass/.test(t))
+    return 'testing';
+
+  // 5) Source — writing/editing code, paginate fix
+  if (/writing branch|paginate.+(limit|cursor)|write code|patch code|edit file|writing .*fix|add.+limit/.test(t))
+    return 'source';
+
+  // 6) GitHub — PRs, branches, releases, security scan, classify scope, deploy report posted
+  if (/\bpr ?#?\d|pull request|github|opening pr|branch pushed|branch:|files? changed|release tag|ci report|deploy report|classify scope|security scan|\bsecrets?\b|generate pr|scope:/.test(t))
+    return 'github';
+
+  // 7) Generic cloud fallback — logs, OOM, memory, incidents
+  if (/logs?|\boom\b|heap|memory|leak|incident|crash/.test(t))
+    return 'cloud';
+
   return null;
 }
 
@@ -611,17 +1343,17 @@ function handleEvent(ev) {
 
   switch (type) {
 
-    case 'chat_message_received':
-      // Just a speech bubble — no station walk needed
-      say(agent, `💬 ${p.message || ''}`);
+    case 'chat_message_received': {
+      // Incoming user/Slack message — investigate at Cloud General by default
+      const msg = p.message || '';
+      const st  = stationOf(msg) || 'cloud';
+      goTo(agent, st, `💬 ${msg}`);
       break;
+    }
 
     case 'thinking': {
       const s  = p.summary || '';
-      const lo = s.toLowerCase();
-      // Error/log investigation always routes to Cloud General and spawns log particles
-      let st = /oom|root cause|log|heap|crash|leak|monitoring|pulling cloud/.test(lo)
-             ? 'cloud' : stationOf(s);
+      const st = stationOf(s);
       if (st) goTo(agent, st, `💭 ${s}`);
       else    say(agent, `💭 ${s}`);
       break;
@@ -636,23 +1368,40 @@ function handleEvent(ev) {
     }
 
     case 'gate_passed':
-      say(agent, `🔓 ${p.gate}: ${p.decision || 'Y'} — ${p.summary || ''}`);
+      // Human verification of a PR / release decision → walk to GitHub
+      goTo(agent, 'github', `🔓 ${p.gate}: ${p.decision || 'Y'} — ${p.summary || ''}`);
       break;
 
     case 'a2a_call_sent': {
       const tgt = p.target_agent;
       if (!A[tgt]) break;
-      const msg = p.args_preview || p.method || '';
       // Save where we came from
       A[agent].returnX = A[agent].targetX;
-      // Walk toward the target agent
-      const dir = A[agent].x < A[tgt].x ? 1 : -1;
-      A[agent].targetX = A[tgt].x - dir * 34;
+      A[agent].returnY = A[agent].targetY;
+      // Glide toward the target agent (offset to its side, not on top)
+      const dx = A[tgt].x - A[agent].x;
+      const dy = A[tgt].y - A[agent].y;
+      const d  = Math.hypot(dx, dy) || 1;
+      const off = 60;
+      A[agent].targetX = A[tgt].x - (dx / d) * off;
+      A[agent].targetY = A[tgt].y - (dy / d) * off;
+      A[agent].idleAfter = Date.now() + 7000;
+      A[tgt].idleAfter   = Date.now() + 4000;
+      // Both robots dance + chatter for ~5.5 seconds
+      const meetFrames = 330;
+      A[agent].meetingT       = meetFrames;
+      A[agent].meetingPartner = tgt;
+      A[tgt].meetingT         = meetFrames;
+      A[tgt].meetingPartner   = agent;
       // Both agents show dialog bubbles
       say(agent, `A2A → ${tgt.replace('Agent', '')}: ${p.args_preview || p.method || ''}`, 5500);
       say(tgt,   `A2A ⏳ from ${agent.replace('Agent', '')}…`, 3000);
       // Return home after conversation
-      setTimeout(() => { if (A[agent]) A[agent].targetX = A[agent].returnX; }, 6000);
+      setTimeout(() => {
+        if (!A[agent]) return;
+        A[agent].targetX = A[agent].returnX;
+        A[agent].targetY = A[agent].returnY;
+      }, 6000);
       break;
     }
 
