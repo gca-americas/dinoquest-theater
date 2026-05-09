@@ -371,6 +371,9 @@ const CFG = {
   CDAgent:   { name:'CD',   color:'#7c3aed', shirt:'#a855f7', shirtD:'#5b21b6', pants:'#2e0a4e', eyeColor:'#00ffff' },
 };
 
+// Display name for an agent key (DinoAgent → "Reme", CIAgent → "CI", etc.)
+const displayName = (key) => CFG[key]?.name ?? (key || '').replace('Agent', '');
+
 // ── Message log ───────────────────────────────────────────────────────────────
 
 const msgLog = [];  // { agent, text, color, ts }
@@ -422,7 +425,7 @@ function drawMsgLog() {
     const age = (Date.now() - m.ts) / 1000;
     ctx.globalAlpha = Math.max(0.4, 1 - age / 45);
     const ty = y0 + 10 + (i + 0.5) * ((logH - 18) / vis);
-    const tag = `[${m.agent.replace('Agent','')}] `;
+    const tag = `[${displayName(m.agent)}] `;
     ctx.textAlign = 'left';
     ctx.fillStyle = m.color;
     ctx.shadowColor = m.color;
@@ -469,6 +472,7 @@ function mk(x, y) {
     meetingPartner: null,   // other agent's name during meeting
     danceF: 0,              // dance-cycle phase counter
     speechMaxT: 1,          // initial speechT — used for bubble pop-in / fade
+    workingSince: 0,        // ms timestamp when settled at target (0 = moving)
   };
 }
 
@@ -866,15 +870,29 @@ function drawRobot(name) {
   const phs     = ag.walkF;
   const meeting = ag.meetingT > 0;
   const dPhs    = ag.danceF;
+
+  // "Bored at the station" — ramps in 0→1 between 10s and 14s after settling.
+  // While bored, the bot fidgets: bigger bob, gentle sway, periodic look-around.
+  const settledMs = (!meeting && ag.workingSince) ? (Date.now() - ag.workingSince) : 0;
+  const boredAmp  = Math.max(0, Math.min(1, (settledMs / 1000 - 10) / 4));
+  if (boredAmp > 0 && !meeting) {
+    // Look left, then right, every ~4.5s
+    ag.facing = (Math.floor(settledMs / 4500) % 2 === 0) ? 1 : -1;
+  }
+
   const active  = (ag.speech && ag.speechT > 0) || ag.working || meeting;
   const dir     = ag.facing;
-  // Dancing: amplified bob and arm wave; talking: gentle nod
+  // Dancing: amplified bob and arm wave; talking: gentle nod; bored: extra jiggle
   const bob     = Math.sin(phs * 0.10) * 2.5
-                + (meeting ? Math.abs(Math.sin(dPhs * 0.30)) * 6 : 0);
+                + (meeting ? Math.abs(Math.sin(dPhs * 0.30)) * 6 : 0)
+                + boredAmp * Math.sin(phs * 0.18) * 4;
   const armSwing = meeting
     ? Math.sin(dPhs * 0.32) * h * 0.14
-    : (moving ? Math.sin(phs * 0.22) : Math.sin(phs * 0.10)) * h * 0.04;
-  const danceTilt = meeting ? Math.sin(dPhs * 0.26) * 0.18 : 0;
+    : (moving ? Math.sin(phs * 0.22) : Math.sin(phs * 0.10)) * h * 0.04
+      + boredAmp * Math.sin(phs * 0.16) * h * 0.10;
+  const danceTilt = meeting
+    ? Math.sin(dPhs * 0.26) * 0.18
+    : boredAmp * Math.sin(phs * 0.13) * 0.12;
 
   // Proportions
   const hdW = h * 0.46;
@@ -1208,8 +1226,9 @@ function tick() {
     const ag = A[name];
     if (!ag) continue;
     // Idle fade: invisible after 30s, fades out over 3s
+    // Idle fade — fully visible until 60s of no activity, fades over 3s
     const idle = (now - ag.lastSeen) / 1000;
-    ag.alpha = idle > 33 ? 0 : idle > 30 ? 1 - (idle - 30) / 3 : 1;
+    ag.alpha = idle > 63 ? 0 : idle > 60 ? 1 - (idle - 60) / 3 : 1;
 
     // Meeting state: face partner and emit sparkles
     if (ag.meetingT > 0) {
@@ -1248,10 +1267,12 @@ function tick() {
       ag.y += ag.vy;
       ag.walkF  += 1;
       ag.working = false;
+      ag.workingSince = 0;
     } else {
       ag.x = ag.targetX;
       ag.y = ag.targetY;
       ag.vx *= 0.7; ag.vy *= 0.7;
+      if (!ag.working) ag.workingSince = now;   // first frame at target
       ag.working = true;
       ag.walkF  += 0.4;
     }
@@ -1285,7 +1306,7 @@ function goTo(name, stationId, speech, frames = 480) {
   A[name].targetX  = st.x + (dx / d) * off;
   A[name].targetY  = st.y + (dy / d) * off;
   A[name].lastSeen = Date.now();
-  A[name].idleAfter = Date.now() + 6500; // pause wandering while visiting
+  A[name].idleAfter = Date.now() + 60000; // park at the station for ~1 min
   pulseConnection(stationId);
   if (speech) say(name, speech);
   lightStation(stationId, frames);
@@ -1394,8 +1415,8 @@ function handleEvent(ev) {
       A[tgt].meetingT         = meetFrames;
       A[tgt].meetingPartner   = agent;
       // Both agents show dialog bubbles
-      say(agent, `A2A → ${tgt.replace('Agent', '')}: ${p.args_preview || p.method || ''}`, 5500);
-      say(tgt,   `A2A ⏳ from ${agent.replace('Agent', '')}…`, 3000);
+      say(agent, `A2A → ${displayName(tgt)}: ${p.args_preview || p.method || ''}`, 5500);
+      say(tgt,   `A2A ⏳ from ${displayName(agent)}…`, 3000);
       // Return home after conversation
       setTimeout(() => {
         if (!A[agent]) return;
@@ -1406,7 +1427,7 @@ function handleEvent(ev) {
     }
 
     case 'a2a_call_received': {
-      const from = (p.from_agent || '').replace('Agent', '') || 'unknown';
+      const from = displayName(p.from_agent || '') || 'unknown';
       const preview = p.message_preview || p.args_preview || '';
       say(agent, `A2A ✓ ${from}: ${preview}`);
       break;
