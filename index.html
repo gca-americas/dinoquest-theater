@@ -473,6 +473,8 @@ function mk(x, y) {
     danceF: 0,              // dance-cycle phase counter
     speechMaxT: 1,          // initial speechT — used for bubble pop-in / fade
     workingSince: 0,        // ms timestamp when settled at target (0 = moving)
+    atStation: null,        // station id the bot is currently parked at
+    atStationSince: 0,      // ms timestamp when current station visit started
   };
 }
 
@@ -1296,17 +1298,35 @@ function reservedBottom() { return Math.max(110, H() * 0.22); }
 
 // ── Event helpers ─────────────────────────────────────────────────────────────
 
+// Min time at a station before another goTo can move it (6s),
+// max parking time before idle wander pulls it home (1 min — set via idleAfter below)
+const MIN_STATION_DWELL_MS = 6000;
+
 function goTo(name, stationId, speech, frames = 480) {
+  const ag = A[name];
   const st = stations[stationId];
-  if (!st || !A[name]) return;
-  // Park robot just inward of the platform (toward hub center) so it doesn't overlap
-  const dx = centerX - st.x, dy = centerY - st.y;
-  const d  = Math.hypot(dx, dy) || 1;
-  const off = Math.max(40, hexRX * 0.16);
-  A[name].targetX  = st.x + (dx / d) * off;
-  A[name].targetY  = st.y + (dy / d) * off;
-  A[name].lastSeen = Date.now();
-  A[name].idleAfter = Date.now() + 60000; // park at the station for ~1 min
+  if (!st || !ag) return;
+
+  const now         = Date.now();
+  const sameStation = ag.atStation === stationId;
+  const dwellMs     = now - (ag.atStationSince || 0);
+
+  // Move the bot only if it's a new station AND it has dwelt long enough.
+  // Otherwise the event still gets a bubble + station ping, but the bot stays put.
+  if (sameStation || dwellMs >= MIN_STATION_DWELL_MS || !ag.atStation) {
+    const dx = centerX - st.x, dy = centerY - st.y;
+    const d  = Math.hypot(dx, dy) || 1;
+    const off = Math.max(40, hexRX * 0.16);
+    ag.targetX        = st.x + (dx / d) * off;
+    ag.targetY        = st.y + (dy / d) * off;
+    if (!sameStation) {
+      ag.atStation      = stationId;
+      ag.atStationSince = now;
+    }
+  }
+
+  ag.lastSeen  = now;
+  ag.idleAfter = now + 60000; // park at the station for ~1 min
   pulseConnection(stationId);
   if (speech) say(name, speech);
   lightStation(stationId, frames);
@@ -1406,8 +1426,9 @@ function handleEvent(ev) {
       const off = 60;
       A[agent].targetX = A[tgt].x - (dx / d) * off;
       A[agent].targetY = A[tgt].y - (dy / d) * off;
-      A[agent].idleAfter = Date.now() + 7000;
-      A[tgt].idleAfter   = Date.now() + 4000;
+      // After the A2A meeting + return-home glide, both bots stay parked ~1 min
+      A[agent].idleAfter = Date.now() + 60000;
+      A[tgt].idleAfter   = Date.now() + 60000;
       // Both robots dance + chatter for ~5.5 seconds
       const meetFrames = 330;
       A[agent].meetingT       = meetFrames;
